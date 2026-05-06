@@ -25,24 +25,41 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
   const { pathname } = request.nextUrl
 
-  // Public routes
+  // Public routes — skip getUser() entirely to avoid extra latency
   if (
     pathname.startsWith('/api/shopify') ||
     pathname.startsWith('/auth') ||
     pathname === '/'
   ) {
-    // store-callback needs the user session already set (handled inside the route)
     return supabaseResponse
   }
 
+  // Log all incoming cookies for debugging /dashboard auth
+  const incomingCookies = request.cookies.getAll()
+  const sbCookies = incomingCookies.filter((c) => c.name.startsWith('sb-'))
+  console.log(
+    `[middleware] path=${pathname}` +
+    ` totalCookies=${incomingCookies.length}` +
+    ` sbCookies=${JSON.stringify(sbCookies.map((c) => ({ name: c.name, valueLen: c.value.length, valuePrefix: c.value.substring(0, 30) })))}`
+  )
+
+  const {
+    data: { user },
+    error: getUserError,
+  } = await supabase.auth.getUser()
+
+  console.log(
+    `[middleware] path=${pathname} getUser:` +
+    ` userId=${user?.id ?? 'null'}` +
+    ` email=${user?.email ?? 'null'}` +
+    ` error=${getUserError?.message ?? 'none'}`
+  )
+
   // Require auth for protected routes
   if (!user) {
+    console.log(`[middleware] path=${pathname} -> redirect to / (no user)`)
     return NextResponse.redirect(new URL('/', request.url))
   }
 

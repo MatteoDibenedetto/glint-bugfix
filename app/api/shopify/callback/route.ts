@@ -128,6 +128,10 @@ export async function GET(request: NextRequest) {
                 ...(options ?? {}),
                 path: options?.path ?? '/',
               }
+              console.log(
+                `[shopify/callback] setAll cookie: name=${name} valueLen=${value.length}` +
+                ` valuePrefix=${value.substring(0, 30)} opts=${JSON.stringify(opts)}`
+              )
               response.cookies.set(name, value, opts)
             })
           },
@@ -144,6 +148,21 @@ export async function GET(request: NextRequest) {
       '[shopify/callback] setSession done. setAll calls=' + setAllCallCount +
       ' cookies=' + JSON.stringify(cookiesWritten) +
       ' error=' + (setSessionError?.message ?? 'none')
+    )
+
+    // Sanity check: can we read back the user with this client?
+    const { data: userData, error: userError } = await supabaseSSR.auth.getUser()
+    console.log(
+      '[shopify/callback] getUser sanity: id=' + (userData?.user?.id ?? 'null') +
+      ' email=' + (userData?.user?.email ?? 'null') +
+      ' error=' + (userError?.message ?? 'none')
+    )
+
+    // Log all cookies the response is sending
+    const responseCookies = response.cookies.getAll()
+    console.log(
+      '[shopify/callback] response cookies count=' + responseCookies.length +
+      ' names=' + JSON.stringify(responseCookies.map((c) => c.name))
     )
 
     // Belt-and-suspenders: if setSession didn't trigger setAll for some reason,
