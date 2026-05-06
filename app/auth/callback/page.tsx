@@ -21,9 +21,10 @@ export default function AuthCallbackPage() {
         .setSession({ access_token: accessToken, refresh_token: refreshToken })
         .then(({ data, error }) => {
           if (data.session && !error) {
-            router.replace('/dashboard')
+            // Hard navigation so middleware sees the updated session cookie
+            window.location.href = '/dashboard'
           } else {
-            router.replace('/?error=auth_failed')
+            window.location.href = '/?error=auth_failed'
           }
         })
     } else {
