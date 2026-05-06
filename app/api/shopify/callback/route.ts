@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { exchangeStoreCode, getShopInfo, verifyHmac } from '@/lib/shopify/auth'
 import { createAdminClient } from '@/lib/supabase/server'
 
@@ -78,10 +79,58 @@ export async function GET(request: NextRequest) {
       throw new Error(linkError?.message)
     }
 
+    // Exchange the magic link server-side: follow it with redirect:manual,
+    // parse the tokens from the Location header, set session cookies directly
+    // in the response so the middleware sees them immediately.
+    const verifyRes = await fetch(linkData.properties.action_link, {
+      redirect: 'manual',
+    })
+
+    const location = verifyRes.headers.get('location') ?? ''
+    let accessToken: string | null = null
+    let refreshToken: string | null = null
+
+    try {
+      const redirectUrl = new URL(location)
+      // Tokens come in the hash fragment (implicit flow)
+      const hashParams = new URLSearchParams(redirectUrl.hash.substring(1))
+      accessToken = hashParams.get('access_token')
+      refreshToken = hashParams.get('refresh_token')
+      // Fallback: some Supabase versions put them in query params
+      if (!accessToken) accessToken = redirectUrl.searchParams.get('access_token')
+      if (!refreshToken) refreshToken = redirectUrl.searchParams.get('refresh_token')
+    } catch {
+      // location header was unparseable — fall through to error
+    }
+
+    if (!accessToken || !refreshToken) {
+      throw new Error('Could not extract tokens from magic link redirect')
+    }
+
     cookieStore.delete('shopify_oauth_state')
     cookieStore.delete('shopify_shop')
 
-    return NextResponse.redirect(linkData.properties.action_link)
+    // Build redirect to /dashboard and stamp the session cookies on it
+    const response = NextResponse.redirect(new URL('/dashboard', request.url))
+
+    const supabaseSSR = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll: () => [],
+          setAll: (cookiesToSet: { name: string; value: string; options?: CookieOptions }[]) => {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              response.cookies.set(name, value, options ?? {})
+            })
+          },
+        },
+      }
+    )
+
+    await supabaseSSR.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
+
+    return response
   } catch (err) {
     console.error('Shopify OAuth error:', err)
     return NextResponse.redirect(new URL('/?error=auth_failed', request.url))

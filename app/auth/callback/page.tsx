@@ -1,18 +1,17 @@
 'use client'
 
 import { useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
 export const dynamic = 'force-dynamic'
 
 export default function AuthCallbackPage() {
-  const router = useRouter()
-
   useEffect(() => {
+    // Fallback: if the browser lands here with hash tokens (e.g. direct magic link
+    // email), exchange them client-side.  The Shopify OAuth flow now bypasses this
+    // page entirely — it sets cookies server-side in /api/shopify/callback.
     const supabase = createClient()
 
-    // Parse the hash fragment manually — @supabase/ssr doesn't auto-process it
     const hash = window.location.hash.substring(1)
     const params = new URLSearchParams(hash)
     const accessToken = params.get('access_token')
@@ -22,17 +21,15 @@ export default function AuthCallbackPage() {
       supabase.auth
         .setSession({ access_token: accessToken, refresh_token: refreshToken })
         .then(({ data, error }) => {
-          if (data.session && !error) {
-            // Hard navigation so middleware sees the updated session cookie
-            window.location.href = '/dashboard'
-          } else {
-            window.location.href = '/?error=auth_failed'
-          }
+          window.location.href = data.session && !error ? '/dashboard' : '/?error=auth_failed'
         })
     } else {
-      router.replace('/?error=auth_failed')
+      // No tokens — could already be signed in, just go to dashboard
+      supabase.auth.getSession().then(({ data }) => {
+        window.location.href = data.session ? '/dashboard' : '/?error=auth_failed'
+      })
     }
-  }, [router])
+  }, [])
 
   return (
     <div className="min-h-screen bg-glint-green flex items-center justify-center">
