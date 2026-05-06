@@ -10,14 +10,24 @@ export default function AuthCallbackPage() {
   useEffect(() => {
     const supabase = createClient()
 
-    // Supabase automatically parses the hash fragment on getSession()
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        router.replace('/dashboard')
-      } else {
-        router.replace('/?error=auth_failed')
+    // onAuthStateChange fires once Supabase parses the hash fragment
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        if (session) {
+          router.replace('/dashboard')
+        }
       }
-    })
+    )
+
+    // Timeout fallback — if nothing fires in 8s something went wrong
+    const timeout = setTimeout(() => {
+      router.replace('/?error=auth_failed')
+    }, 8000)
+
+    return () => {
+      subscription.unsubscribe()
+      clearTimeout(timeout)
+    }
   }, [router])
 
   return (
