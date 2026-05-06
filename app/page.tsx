@@ -1,54 +1,64 @@
-import Link from 'next/link'
+'use client'
+
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { ArrowRight, Zap, ShieldCheck, Clock } from 'lucide-react'
+import Button from '@/components/ui/Button'
 
 const errorMessages: Record<string, string> = {
+  invalid_shop: 'Dominio store non valido.',
   invalid_state: 'Sessione scaduta. Riprova.',
-  auth_failed: 'Autenticazione fallita. Riprova.',
+  invalid_hmac: 'Errore di sicurezza. Riprova.',
+  missing_params: 'Parametri mancanti. Riprova.',
+  auth_failed: 'Autenticazione fallita. Verifica il dominio e riprova.',
 }
 
-export default function LandingPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ error?: string }>
-}) {
-  return (
-    <LandingContent searchParamsPromise={searchParams} />
-  )
-}
+export default function LandingPage() {
+  const [shop, setShop] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const router = useRouter()
 
-async function LandingContent({
-  searchParamsPromise,
-}: {
-  searchParamsPromise: Promise<{ error?: string }>
-}) {
-  const { error } = await searchParamsPromise
+  const urlError = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('error')
+    : null
+
+  function normalizeDomain(input: string): string {
+    let s = input.trim().toLowerCase()
+    if (!s.includes('.myshopify.com')) s = `${s}.myshopify.com`
+    return s
+  }
+
+  function handleLogin(e: React.FormEvent) {
+    e.preventDefault()
+    setError('')
+    if (!shop.trim()) { setError('Inserisci il dominio del tuo store.'); return }
+    setLoading(true)
+    router.push(`/api/shopify/auth?shop=${encodeURIComponent(normalizeDomain(shop))}`)
+  }
 
   return (
     <div className="min-h-screen bg-glint-green flex flex-col">
-      {/* Header */}
       <header className="px-8 py-6">
         <span className="text-2xl font-bold text-glint-yellow">glint.</span>
       </header>
 
       <div className="flex-1 flex items-center justify-center px-4">
         <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
-          {/* Left: copy */}
+          {/* Copy */}
           <div>
             <div className="inline-flex items-center gap-2 bg-glint-yellow/10 border border-glint-yellow/20 rounded-full px-3 py-1 mb-6">
               <span className="w-1.5 h-1.5 rounded-full bg-glint-yellow" />
               <span className="text-xs text-glint-yellow font-medium">Bug Fix Portal</span>
             </div>
-
             <h1 className="text-4xl lg:text-5xl font-bold leading-tight mb-4">
               Fix al tuo store<br />
               <span className="text-glint-yellow">veloci e precisi.</span>
             </h1>
-
             <p className="text-glint-grey text-lg leading-relaxed mb-8">
               Descrivi il problema. L'AI analizza il tema e genera il fix.
-              Il team Glint revisiona e carica direttamente su un tema di staging.
+              Il team Glint revisiona e carica su un tema di staging.
             </p>
-
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {[
                 { icon: Zap, title: 'Fix automatico', desc: 'AI analizza e corregge il codice' },
@@ -64,32 +74,47 @@ async function LandingContent({
             </div>
           </div>
 
-          {/* Right: login card */}
+          {/* Login card */}
           <div className="bg-white/5 border border-white/10 rounded-2xl p-8">
             <h2 className="text-xl font-bold mb-1">Accedi con Shopify</h2>
-            <p className="text-glint-grey text-sm mb-8">
-              Usa il tuo account Shopify per accedere al portale.
+            <p className="text-glint-grey text-sm mb-6">
+              Inserisci il dominio del tuo store Shopify per continuare.
             </p>
 
-            {error && (
-              <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 mb-6">
+            {(urlError || error) && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 mb-5">
                 <p className="text-sm text-red-400">
-                  {errorMessages[error] ?? 'Errore di autenticazione. Riprova.'}
+                  {error || errorMessages[urlError as string] || 'Errore. Riprova.'}
                 </p>
               </div>
             )}
 
-            <Link
-              href="/api/shopify/auth"
-              className="flex items-center justify-center gap-3 w-full bg-glint-orange hover:bg-orange-600 active:scale-95 transition-all text-white font-bold py-3.5 px-6 rounded-lg"
-            >
-              <ShopifyIcon />
-              Accedi con Shopify
-              <ArrowRight size={16} />
-            </Link>
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-glint-grey mb-1.5">
+                  Dominio Shopify
+                </label>
+                <div className="flex">
+                  <input
+                    type="text"
+                    value={shop}
+                    onChange={(e) => setShop(e.target.value)}
+                    placeholder="mio-store"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-l-lg px-3.5 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-glint-yellow/60 transition-colors"
+                    required
+                  />
+                  <span className="flex items-center bg-white/8 border border-l-0 border-white/10 rounded-r-lg px-3 text-sm text-glint-grey">
+                    .myshopify.com
+                  </span>
+                </div>
+              </div>
+              <Button type="submit" loading={loading} className="w-full" size="lg">
+                Accedi <ArrowRight size={16} />
+              </Button>
+            </form>
 
-            <p className="text-xs text-glint-grey/50 mt-5 text-center">
-              Accedendo autorizzi glint. ad accedere al tema del tuo store per generare fix.
+            <p className="text-xs text-glint-grey/50 mt-4 text-center">
+              Accedendo autorizzi glint. ad accedere al tema del tuo store.
             </p>
           </div>
         </div>
@@ -101,13 +126,5 @@ async function LandingContent({
         </p>
       </footer>
     </div>
-  )
-}
-
-function ShopifyIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 109 124" fill="currentColor">
-      <path d="M74.7 14.8c-.1-.7-.7-1-1.2-1.1-.5 0-10.8-.2-10.8-.2s-8.6-8.3-9.4-9.1c-.9-.9-2.6-.6-3.3-.4-.1 0-1.6.5-4.2 1.3C43.5 2.1 40.3 0 36.3 0 26.1 0 21 13.1 19.4 19.8c-4.1 1.3-7 2.2-7.4 2.3-2.3.7-2.4.8-2.7 3-.2 1.6-6 46.3-6 46.3L56.6 80 90 73.2 74.7 14.8zM52 6.9c-2 .6-4.3 1.3-6.7 2.1.1-2.4.4-5.9 1.6-8.2C48.9 2 51.1 5.3 52 6.9zm-8 2.5C37.6 11.3 31 13.4 30.3 13.6c1.6-6.2 4.7-9.2 7.4-10.3.6 1.6 1.3 3.9 1.4 6.1H44zm2.5-7.6c.4 0 .8.1 1.2.3-3.4 1.6-7 5.6-8.6 13.5L32 17.2C33.8 11.5 37.6 1.8 46.5 1.8z"/>
-    </svg>
   )
 }
