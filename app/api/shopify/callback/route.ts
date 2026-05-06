@@ -87,23 +87,23 @@ export async function GET(request: NextRequest) {
     })
 
     const location = verifyRes.headers.get('location') ?? ''
-    let accessToken: string | null = null
-    let refreshToken: string | null = null
+    let sessionAccessToken: string | null = null
+    let sessionRefreshToken: string | null = null
 
     try {
       const redirectUrl = new URL(location)
       // Tokens come in the hash fragment (implicit flow)
       const hashParams = new URLSearchParams(redirectUrl.hash.substring(1))
-      accessToken = hashParams.get('access_token')
-      refreshToken = hashParams.get('refresh_token')
+      sessionAccessToken = hashParams.get('access_token')
+      sessionRefreshToken = hashParams.get('refresh_token')
       // Fallback: some Supabase versions put them in query params
-      if (!accessToken) accessToken = redirectUrl.searchParams.get('access_token')
-      if (!refreshToken) refreshToken = redirectUrl.searchParams.get('refresh_token')
+      if (!sessionAccessToken) sessionAccessToken = redirectUrl.searchParams.get('access_token')
+      if (!sessionRefreshToken) sessionRefreshToken = redirectUrl.searchParams.get('refresh_token')
     } catch {
       // location header was unparseable — fall through to error
     }
 
-    if (!accessToken || !refreshToken) {
+    if (!sessionAccessToken || !sessionRefreshToken) {
       throw new Error('Could not extract tokens from magic link redirect')
     }
 
@@ -128,7 +128,7 @@ export async function GET(request: NextRequest) {
       }
     )
 
-    await supabaseSSR.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
+    await supabaseSSR.auth.setSession({ access_token: sessionAccessToken, refresh_token: sessionRefreshToken })
 
     return response
   } catch (err) {
