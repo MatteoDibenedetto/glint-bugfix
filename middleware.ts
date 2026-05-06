@@ -27,7 +27,7 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl
 
-  // Public routes — skip getUser() entirely to avoid extra latency
+  // Public routes — skip auth check entirely
   if (
     pathname.startsWith('/api/shopify') ||
     pathname.startsWith('/auth') ||
@@ -36,51 +36,49 @@ export async function middleware(request: NextRequest) {
     return supabaseResponse
   }
 
-  // Log all incoming cookies for debugging /dashboard auth
+  // Collect everything into a single object to avoid edge-runtime log truncation
+  const debug: Record<string, unknown> = { path: pathname }
+
   const incomingCookies = request.cookies.getAll()
   const sbCookies = incomingCookies.filter((c) => c.name.startsWith('sb-'))
-  console.log(
-    `[middleware] path=${pathname}` +
-    ` totalCookies=${incomingCookies.length}` +
-    ` sbCookies=${JSON.stringify(sbCookies.map((c) => ({ name: c.name, valueLen: c.value.length, valuePrefix: c.value.substring(0, 30) })))}`
-  )
+  debug.totalCookies = incomingCookies.length
+  debug.sbCookies = sbCookies.map((c) => ({ name: c.name, valueLen: c.value.length }))
 
-  // First, try getSession (cookie-only, no network) to see if cookie is parseable
-  let sessionFromCookie: unknown = null
-  let sessionFromCookieError: string | null = null
+  let sessionUserId: string | null = null
   try {
     const r = await supabase.auth.getSession()
-    sessionFromCookie = r.data.session
-      ? { userId: r.data.session.user?.id, email: r.data.session.user?.email, expiresAt: r.data.session.expires_at }
-      : null
-    sessionFromCookieError = r.error?.message ?? null
+    sessionUserId = r.data.session?.user?.id ?? null
+    debug.getSession = { userId: sessionUserId, error: r.error?.message ?? null }
   } catch (e) {
-    sessionFromCookieError = e instanceof Error ? `THREW: ${e.message}` : 'THREW: unknown'
+    debug.getSession = { THREW: e instanceof Error ? e.message : 'unknown' }
   }
-  console.log(`[middleware] path=${pathname} getSession: ${JSON.stringify(sessionFromCookie)} error=${sessionFromCookieError}`)
 
-  // Then try getUser which does a network call to Supabase
   let user: { id: string; email?: string } | null = null
-  let getUserError: string | null = null
   try {
     const r = await supabase.auth.getUser()
     user = r.data.user as { id: string; email?: string } | null
-    getUserError = r.error?.message ?? null
+    debug.getUser = { userId: user?.id ?? null, email: user?.email ?? null, error: r.error?.message ?? null }
   } catch (e) {
-    getUserError = e instanceof Error ? `THREW: ${e.message} | stack: ${e.stack?.substring(0, 200)}` : 'THREW: unknown'
+    debug.getUser = { THREW: e instanceof Error ? e.message : 'unknown', stack: e instanceof Error ? e.stack?.substring(0, 200) : null }
   }
-  console.log(
-    `[middleware] path=${pathname} getUser:` +
-    ` userId=${user?.id ?? 'null'}` +
-    ` email=${user?.email ?? 'null'}` +
-    ` error=${getUserError ?? 'none'}`
-  )
 
-  // Require auth for protected routes
+  // FALLBACK: if getSession found a valid session in the cookie but getUser failed
+  // (likely a network/edge-runtime issue talking to Supabase), trust the cookie and let
+  // the page server component re-validate in Node runtime.
+  if (!user && sessionUserId) {
+    debug.fallback = 'getUser failed but cookie has session — letting through, page will re-check'
+    console.log('[middleware]', JSON.stringify(debug))
+    return supabaseResponse
+  }
+
   if (!user) {
-    console.log(`[middleware] path=${pathname} -> redirect to / (no user)`)
+    debug.outcome = 'redirect to / (no user)'
+    console.log('[middleware]', JSON.stringify(debug))
     return NextResponse.redirect(new URL('/', request.url))
   }
+
+  debug.outcome = 'authenticated'
+  console.log('[middleware]', JSON.stringify(debug))
 
   // Admin-only routes
   if (pathname.startsWith('/admin')) {

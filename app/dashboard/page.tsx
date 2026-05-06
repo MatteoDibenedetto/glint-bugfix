@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
 import { PlusCircle, Clock, Store } from 'lucide-react'
 import { StatusBadge, FixTypeBadge } from '@/components/ui/Badge'
 import Button from '@/components/ui/Button'
@@ -13,7 +14,12 @@ export default async function DashboardPage({
 }) {
   const { store_connected, error } = await searchParams
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
+  console.log(`[dashboard page] getUser: id=${user?.id ?? 'null'} email=${user?.email ?? 'null'} error=${userError?.message ?? 'none'}`)
+  if (!user) {
+    console.log('[dashboard page] no user, redirecting to /')
+    redirect('/')
+  }
 
   const [{ data: requests }, { data: stores }, { data: profile }] = await Promise.all([
     supabase
