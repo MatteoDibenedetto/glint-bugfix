@@ -45,16 +45,35 @@ export async function middleware(request: NextRequest) {
     ` sbCookies=${JSON.stringify(sbCookies.map((c) => ({ name: c.name, valueLen: c.value.length, valuePrefix: c.value.substring(0, 30) })))}`
   )
 
-  const {
-    data: { user },
-    error: getUserError,
-  } = await supabase.auth.getUser()
+  // First, try getSession (cookie-only, no network) to see if cookie is parseable
+  let sessionFromCookie: unknown = null
+  let sessionFromCookieError: string | null = null
+  try {
+    const r = await supabase.auth.getSession()
+    sessionFromCookie = r.data.session
+      ? { userId: r.data.session.user?.id, email: r.data.session.user?.email, expiresAt: r.data.session.expires_at }
+      : null
+    sessionFromCookieError = r.error?.message ?? null
+  } catch (e) {
+    sessionFromCookieError = e instanceof Error ? `THREW: ${e.message}` : 'THREW: unknown'
+  }
+  console.log(`[middleware] path=${pathname} getSession: ${JSON.stringify(sessionFromCookie)} error=${sessionFromCookieError}`)
 
+  // Then try getUser which does a network call to Supabase
+  let user: { id: string; email?: string } | null = null
+  let getUserError: string | null = null
+  try {
+    const r = await supabase.auth.getUser()
+    user = r.data.user as { id: string; email?: string } | null
+    getUserError = r.error?.message ?? null
+  } catch (e) {
+    getUserError = e instanceof Error ? `THREW: ${e.message} | stack: ${e.stack?.substring(0, 200)}` : 'THREW: unknown'
+  }
   console.log(
     `[middleware] path=${pathname} getUser:` +
     ` userId=${user?.id ?? 'null'}` +
     ` email=${user?.email ?? 'null'}` +
-    ` error=${getUserError?.message ?? 'none'}`
+    ` error=${getUserError ?? 'none'}`
   )
 
   // Require auth for protected routes
