@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { buildStoreAuthUrl, validateShopDomain } from '@/lib/shopify/auth'
+import { buildLoginAuthUrl, validateShopDomain } from '@/lib/shopify/auth'
 import { cookies } from 'next/headers'
 import crypto from 'crypto'
 
@@ -21,5 +21,5 @@ export async function GET(request: NextRequest) {
   cookieStore.set('shopify_oauth_state', state, opts)
   cookieStore.set('shopify_shop', shop, opts)
 
-  return NextResponse.redirect(buildStoreAuthUrl(shop, state))
+  return NextResponse.redirect(buildLoginAuthUrl(shop, state))
 }

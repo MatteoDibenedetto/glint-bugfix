@@ -70,6 +70,18 @@ export async function exchangeAccountCode(
 
 // ─── Store OAuth ({shop}.myshopify.com) ──────────────────────────────────────
 
+// Used for initial login
+export function buildLoginAuthUrl(shop: string, state: string): string {
+  const params = new URLSearchParams({
+    client_id: API_KEY,
+    scope: STORE_SCOPES,
+    redirect_uri: `${APP_URL}/api/shopify/callback`,
+    state,
+  })
+  return `https://${shop}/admin/oauth/authorize?${params}`
+}
+
+// Used to connect an additional store from the dashboard
 export function buildStoreAuthUrl(shop: string, state: string): string {
   const params = new URLSearchParams({
     client_id: API_KEY,
