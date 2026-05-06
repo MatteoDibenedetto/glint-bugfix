@@ -103,30 +103,75 @@ export async function GET(request: NextRequest) {
     cookieStore.delete('shopify_oauth_state')
     cookieStore.delete('shopify_shop')
 
-    // Build redirect to /dashboard and stamp the session cookies on it via @supabase/ssr
+    // Build redirect to /dashboard and stamp the session cookies on it via @supabase/ssr.
+    // We need both:
+    //   - getAll: return real request cookies (so the chunked-cookie helper can see state)
+    //   - setAll: write to BOTH request.cookies (so a follow-up read in this handler sees them)
+    //             AND response.cookies (so the browser receives them)
     const response = NextResponse.redirect(new URL('/dashboard', request.url))
+    let setAllCallCount = 0
+    const cookiesWritten: string[] = []
 
     const supabaseSSR = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
-          getAll: () => [],
-          setAll: (cookiesToSet: { name: string; value: string; options?: CookieOptions }[]) => {
+          getAll() {
+            return request.cookies.getAll()
+          },
+          setAll(cookiesToSet: { name: string; value: string; options?: CookieOptions }[]) {
+            setAllCallCount++
             cookiesToSet.forEach(({ name, value, options }) => {
-              response.cookies.set(name, value, options ?? {})
+              cookiesWritten.push(name)
+              const opts: CookieOptions = {
+                ...(options ?? {}),
+                path: options?.path ?? '/',
+              }
+              response.cookies.set(name, value, opts)
             })
           },
         },
       }
     )
 
-    await supabaseSSR.auth.setSession({
+    const { error: setSessionError } = await supabaseSSR.auth.setSession({
       access_token: otpData.session.access_token,
       refresh_token: otpData.session.refresh_token,
     })
 
-    console.log('[shopify/callback] session set, redirecting to /dashboard')
+    console.log(
+      '[shopify/callback] setSession done. setAll calls=' + setAllCallCount +
+      ' cookies=' + JSON.stringify(cookiesWritten) +
+      ' error=' + (setSessionError?.message ?? 'none')
+    )
+
+    // Belt-and-suspenders: if setSession didn't trigger setAll for some reason,
+    // write the canonical session cookie ourselves.
+    if (setAllCallCount === 0) {
+      console.warn('[shopify/callback] setAll was never called — writing cookie manually')
+      const projectRef = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL!).hostname.split('.')[0]
+      const cookieName = `sb-${projectRef}-auth-token`
+      const sessionPayload = {
+        access_token: otpData.session.access_token,
+        refresh_token: otpData.session.refresh_token,
+        expires_at: otpData.session.expires_at,
+        expires_in: otpData.session.expires_in,
+        token_type: otpData.session.token_type,
+        user: otpData.session.user,
+      }
+      const encoded = 'base64-' + Buffer.from(JSON.stringify(sessionPayload)).toString('base64')
+      response.cookies.set(cookieName, encoded, {
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        maxAge: 60 * 60 * 24 * 7,
+      })
+      console.log('[shopify/callback] manually wrote cookie:', cookieName)
+    }
+
+    console.log('[shopify/callback] redirecting to /dashboard')
     return response
   } catch (err) {
     console.error('[shopify/callback] fatal error:', err)
