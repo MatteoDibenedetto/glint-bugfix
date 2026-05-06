@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
       await supabaseAdmin.auth.admin.generateLink({
         type: 'magiclink',
         email: shopInfo.email,
-        options: { redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard` },
+        options: { redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback` },
       })
 
     if (linkError || !linkData.properties?.action_link) {
