@@ -1,0 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --glint-green: #0C1E1A;
+  --glint-orange: #FD3B01;
+  --glint-yellow: #DCFF33;
+  --glint-grey: #D6D3C9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--glint-green);
+  color: #ffffff;
+  font-family: 'DM Sans', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--glint-yellow);
+  outline-offset: 2px;
+}
+
+/* Diff viewer dark theme overrides */
+.diff-viewer-wrapper table {
+  font-family: 'DM Sans', monospace !important;
+  font-size: 13px !important;
+}
