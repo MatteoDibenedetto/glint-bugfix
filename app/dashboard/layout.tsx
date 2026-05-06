@@ -16,16 +16,21 @@ export default async function DashboardLayout({
     redirect('/')
   }
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from('profiles')
     .select('role, email')
     .eq('id', user.id)
     .single()
+  console.log(`[dashboard layout] profile fetch: profile=${JSON.stringify(profile)} error=${profileError?.message ?? 'none'} code=${profileError?.code ?? 'none'}`)
 
-  if (!profile) redirect('/')
+  if (!profile) {
+    console.log('[dashboard layout] no profile, redirecting to /')
+    redirect('/')
+  }
 
   // Staff should be in /admin, not /dashboard
   if (['admin', 'frontend_dev', 'backend_dev', 'store_manager'].includes(profile.role)) {
+    console.log(`[dashboard layout] staff role ${profile.role}, redirecting to /admin`)
     redirect('/admin')
   }
 
