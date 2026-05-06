@@ -67,50 +67,43 @@ export async function GET(request: NextRequest) {
       { onConflict: 'shop_domain' }
     )
 
-    // Generate magic link (signs user in without sending email)
+    // Generate a magiclink — we use the OTP token from the response, NOT the
+    // action_link, so we never have to follow an HTTP redirect server-side.
     const { data: linkData, error: linkError } =
       await supabaseAdmin.auth.admin.generateLink({
         type: 'magiclink',
         email: shopInfo.email,
-        options: { redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback` },
       })
 
-    if (linkError || !linkData.properties?.action_link) {
-      throw new Error(linkError?.message)
+    if (linkError || !linkData.properties?.email_otp) {
+      console.error('[shopify/callback] generateLink failed:', linkError, linkData)
+      throw new Error('generateLink: ' + (linkError?.message ?? 'no email_otp'))
     }
 
-    // Exchange the magic link server-side: follow it with redirect:manual,
-    // parse the tokens from the Location header, set session cookies directly
-    // in the response so the middleware sees them immediately.
-    const verifyRes = await fetch(linkData.properties.action_link, {
-      redirect: 'manual',
+    // Verify the OTP server-side using the public anon client. This returns a
+    // session directly (access_token + refresh_token) — no redirect chasing.
+    const { createClient: createPublicClient } = await import('@supabase/supabase-js')
+    const supabasePublic = createPublicClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    )
+
+    const { data: otpData, error: otpError } = await supabasePublic.auth.verifyOtp({
+      email: shopInfo.email,
+      token: linkData.properties.email_otp,
+      type: 'magiclink',
     })
 
-    const location = verifyRes.headers.get('location') ?? ''
-    let sessionAccessToken: string | null = null
-    let sessionRefreshToken: string | null = null
-
-    try {
-      const redirectUrl = new URL(location)
-      // Tokens come in the hash fragment (implicit flow)
-      const hashParams = new URLSearchParams(redirectUrl.hash.substring(1))
-      sessionAccessToken = hashParams.get('access_token')
-      sessionRefreshToken = hashParams.get('refresh_token')
-      // Fallback: some Supabase versions put them in query params
-      if (!sessionAccessToken) sessionAccessToken = redirectUrl.searchParams.get('access_token')
-      if (!sessionRefreshToken) sessionRefreshToken = redirectUrl.searchParams.get('refresh_token')
-    } catch {
-      // location header was unparseable — fall through to error
-    }
-
-    if (!sessionAccessToken || !sessionRefreshToken) {
-      throw new Error('Could not extract tokens from magic link redirect')
+    if (otpError || !otpData.session) {
+      console.error('[shopify/callback] verifyOtp failed:', otpError, otpData)
+      throw new Error('verifyOtp: ' + (otpError?.message ?? 'no session'))
     }
 
     cookieStore.delete('shopify_oauth_state')
     cookieStore.delete('shopify_shop')
 
-    // Build redirect to /dashboard and stamp the session cookies on it
+    // Build redirect to /dashboard and stamp the session cookies on it via @supabase/ssr
     const response = NextResponse.redirect(new URL('/dashboard', request.url))
 
     const supabaseSSR = createServerClient(
@@ -128,11 +121,16 @@ export async function GET(request: NextRequest) {
       }
     )
 
-    await supabaseSSR.auth.setSession({ access_token: sessionAccessToken, refresh_token: sessionRefreshToken })
+    await supabaseSSR.auth.setSession({
+      access_token: otpData.session.access_token,
+      refresh_token: otpData.session.refresh_token,
+    })
 
+    console.log('[shopify/callback] session set, redirecting to /dashboard')
     return response
   } catch (err) {
-    console.error('Shopify OAuth error:', err)
-    return NextResponse.redirect(new URL('/?error=auth_failed', request.url))
+    console.error('[shopify/callback] fatal error:', err)
+    const msg = err instanceof Error ? err.message : 'unknown'
+    return NextResponse.redirect(new URL(`/?error=auth_failed&detail=${encodeURIComponent(msg)}`, request.url))
   }
 }
