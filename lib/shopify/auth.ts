@@ -1,54 +1,106 @@
-const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY!
-const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET!
+import crypto from 'crypto'
+
+const API_KEY = process.env.SHOPIFY_API_KEY!
+const API_SECRET = process.env.SHOPIFY_API_SECRET!
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL!
 
-const SCOPES = 'read_themes,write_themes'
+const STORE_SCOPES = 'read_themes,write_themes'
 
-export function buildShopifyAuthUrl(shop: string, state: string): string {
-  const redirectUri = `${APP_URL}/api/shopify/callback`
-  const params = new URLSearchParams({
-    client_id: SHOPIFY_API_KEY,
-    scope: SCOPES,
-    redirect_uri: redirectUri,
-    state,
-    'grant_options[]': 'per-user',
-  })
-  return `https://${shop}/admin/oauth/authorize?${params.toString()}`
+// ─── PKCE helpers ────────────────────────────────────────────────────────────
+
+export function generateCodeVerifier(): string {
+  return crypto.randomBytes(32).toString('base64url')
 }
 
-export async function exchangeCodeForToken(
+export function generateCodeChallenge(verifier: string): string {
+  return crypto.createHash('sha256').update(verifier).digest('base64url')
+}
+
+// ─── Account OAuth (accounts.shopify.com) ────────────────────────────────────
+
+export function buildAccountAuthUrl(state: string, codeChallenge: string): string {
+  const params = new URLSearchParams({
+    client_id: API_KEY,
+    scope: 'openid email profile',
+    redirect_uri: `${APP_URL}/api/shopify/callback`,
+    state,
+    response_type: 'code',
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+  })
+  return `https://accounts.shopify.com/oauth/authorize?${params}`
+}
+
+export async function exchangeAccountCode(
+  code: string,
+  codeVerifier: string
+): Promise<{ email: string; firstName: string; lastName: string }> {
+  const res = await fetch('https://accounts.shopify.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: API_KEY,
+      client_secret: API_SECRET,
+      code,
+      redirect_uri: `${APP_URL}/api/shopify/callback`,
+      code_verifier: codeVerifier,
+    }),
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Account token exchange failed: ${text}`)
+  }
+
+  const data = await res.json()
+
+  // Decode id_token (JWT) payload — no signature verification needed here,
+  // the token came directly from Shopify over HTTPS
+  const payload = JSON.parse(
+    Buffer.from(data.id_token.split('.')[1], 'base64url').toString('utf-8')
+  )
+
+  return {
+    email: payload.email ?? '',
+    firstName: payload.given_name ?? '',
+    lastName: payload.family_name ?? '',
+  }
+}
+
+// ─── Store OAuth ({shop}.myshopify.com) ──────────────────────────────────────
+
+export function buildStoreAuthUrl(shop: string, state: string): string {
+  const params = new URLSearchParams({
+    client_id: API_KEY,
+    scope: STORE_SCOPES,
+    redirect_uri: `${APP_URL}/api/shopify/store-callback`,
+    state,
+  })
+  return `https://${shop}/admin/oauth/authorize?${params}`
+}
+
+export async function exchangeStoreCode(
   shop: string,
   code: string
 ): Promise<string> {
-  const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
+  const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: SHOPIFY_API_KEY,
-      client_secret: SHOPIFY_API_SECRET,
-      code,
-    }),
+    body: JSON.stringify({ client_id: API_KEY, client_secret: API_SECRET, code }),
   })
-  if (!response.ok) {
-    throw new Error(`Shopify token exchange failed: ${response.statusText}`)
-  }
-  const data = await response.json()
+  if (!res.ok) throw new Error(`Store token exchange failed: ${res.statusText}`)
+  const data = await res.json()
   return data.access_token as string
 }
 
 export async function getShopInfo(shop: string, accessToken: string) {
-  const response = await fetch(`https://${shop}/admin/api/2024-10/shop.json`, {
+  const res = await fetch(`https://${shop}/admin/api/2024-10/shop.json`, {
     headers: { 'X-Shopify-Access-Token': accessToken },
   })
-  if (!response.ok) throw new Error('Failed to fetch shop info')
-  const data = await response.json()
-  return data.shop as {
-    id: number
-    name: string
-    email: string
-    domain: string
-    myshopify_domain: string
-  }
+  if (!res.ok) throw new Error('Failed to fetch shop info')
+  const data = await res.json()
+  return data.shop as { id: number; name: string; email: string; myshopify_domain: string }
 }
 
 export function validateShopDomain(shop: string): boolean {
@@ -58,20 +110,8 @@ export function validateShopDomain(shop: string): boolean {
 export function verifyHmac(params: URLSearchParams, secret: string): boolean {
   const hmacParam = params.get('hmac')
   if (!hmacParam) return false
-
-  const sortedParams = new URLSearchParams()
-  params.forEach((value, key) => {
-    if (key !== 'hmac') sortedParams.append(key, value)
-  })
-
-  const message = sortedParams.toString()
-
-  // Node.js crypto — runs only on server
-  const crypto = require('crypto')
-  const digest = crypto
-    .createHmac('sha256', secret)
-    .update(message)
-    .digest('hex')
-
+  const sorted = new URLSearchParams()
+  params.forEach((v, k) => { if (k !== 'hmac') sorted.append(k, v) })
+  const digest = crypto.createHmac('sha256', secret).update(sorted.toString()).digest('hex')
   return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmacParam))
 }

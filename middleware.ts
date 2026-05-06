@@ -37,6 +37,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/auth') ||
     pathname === '/'
   ) {
+    // store-callback needs the user session already set (handled inside the route)
     return supabaseResponse
   }
 

@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import {
-  exchangeCodeForToken,
-  getShopInfo,
-  verifyHmac,
-} from '@/lib/shopify/auth'
+import { exchangeAccountCode } from '@/lib/shopify/auth'
 import { createAdminClient } from '@/lib/supabase/server'
 
 export async function GET(request: NextRequest) {
@@ -12,97 +8,64 @@ export async function GET(request: NextRequest) {
   const cookieStore = await cookies()
 
   const storedState = cookieStore.get('shopify_oauth_state')?.value
-  const storedShop = cookieStore.get('shopify_shop')?.value
+  const codeVerifier = cookieStore.get('shopify_code_verifier')?.value
   const returnedState = searchParams.get('state')
   const code = searchParams.get('code')
-  const shop = searchParams.get('shop')
 
-  // Validate state
-  if (!storedState || storedState !== returnedState) {
+  if (!storedState || storedState !== returnedState || !codeVerifier || !code) {
     return NextResponse.redirect(new URL('/?error=invalid_state', request.url))
   }
 
-  // Validate shop matches
-  if (!storedShop || storedShop !== shop) {
-    return NextResponse.redirect(new URL('/?error=invalid_shop', request.url))
-  }
-
-  // Verify HMAC
-  if (!verifyHmac(searchParams, process.env.SHOPIFY_API_SECRET!)) {
-    return NextResponse.redirect(new URL('/?error=invalid_hmac', request.url))
-  }
-
-  if (!code || !shop) {
-    return NextResponse.redirect(new URL('/?error=missing_params', request.url))
-  }
-
   try {
-    // Exchange code for access token
-    const accessToken = await exchangeCodeForToken(shop, code)
+    const { email, firstName, lastName } = await exchangeAccountCode(code, codeVerifier)
 
-    // Get shop details
-    const shopInfo = await getShopInfo(shop, accessToken)
+    if (!email) throw new Error('No email returned from Shopify')
 
     const supabaseAdmin = await createAdminClient()
 
-    // Create or find user by email
+    // Find or create user
     const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
-    const existingUser = existingUsers.users.find(
-      (u) => u.email === shopInfo.email
-    )
+    const existing = existingUsers.users.find((u) => u.email === email)
 
     let userId: string
-
-    if (existingUser) {
-      userId = existingUser.id
+    if (existing) {
+      userId = existing.id
     } else {
       const { data: newUser, error } = await supabaseAdmin.auth.admin.createUser({
-        email: shopInfo.email,
+        email,
         email_confirm: true,
-        user_metadata: { shop_domain: shop, shop_name: shopInfo.name },
+        user_metadata: { first_name: firstName, last_name: lastName },
       })
-      if (error || !newUser.user) {
-        throw new Error(`Failed to create user: ${error?.message}`)
-      }
+      if (error || !newUser.user) throw new Error(error?.message)
       userId = newUser.user.id
     }
 
     // Upsert profile
     await supabaseAdmin.from('profiles').upsert({
       id: userId,
-      email: shopInfo.email,
-    }, { onConflict: 'id', ignoreDuplicates: true })
+      email,
+      first_name: firstName || null,
+      last_name: lastName || null,
+    }, { onConflict: 'id' })
 
-    // Upsert store
-    await supabaseAdmin.from('stores').upsert({
-      shop_domain: shop,
-      shop_name: shopInfo.name,
-      owner_id: userId,
-      shopify_access_token: accessToken,
-    }, { onConflict: 'shop_domain' })
-
-    // Generate magic link to sign user in (no email sent)
+    // Generate magic link to sign the user in
     const { data: linkData, error: linkError } =
       await supabaseAdmin.auth.admin.generateLink({
         type: 'magiclink',
-        email: shopInfo.email,
-        options: {
-          redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
-        },
+        email,
+        options: { redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard` },
       })
 
     if (linkError || !linkData.properties?.action_link) {
-      throw new Error(`Failed to generate login link: ${linkError?.message}`)
+      throw new Error(linkError?.message)
     }
 
-    // Clean up OAuth cookies
     cookieStore.delete('shopify_oauth_state')
-    cookieStore.delete('shopify_shop')
+    cookieStore.delete('shopify_code_verifier')
 
-    // Redirect user to the magic link (auto-signs them in)
     return NextResponse.redirect(linkData.properties.action_link)
   } catch (err) {
-    console.error('Shopify OAuth error:', err)
+    console.error('Account OAuth error:', err)
     return NextResponse.redirect(new URL('/?error=auth_failed', request.url))
   }
 }
