@@ -8,9 +8,13 @@ export default async function DashboardLayout({
   children: React.ReactNode
 }) {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
+  console.log(`[dashboard layout] getUser: id=${user?.id ?? 'null'} email=${user?.email ?? 'null'} error=${userError?.message ?? 'none'}`)
 
-  if (!user) redirect('/')
+  if (!user) {
+    console.log('[dashboard layout] no user, redirecting to /')
+    redirect('/')
+  }
 
   const { data: profile } = await supabase
     .from('profiles')
