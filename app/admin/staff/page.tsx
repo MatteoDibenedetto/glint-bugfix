@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Card } from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
+import { Select } from '@/components/ui/Select'
 import type { Profile, UserRole } from '@/types'
 
 const roles: { value: UserRole; label: string; description: string }[] = [
@@ -23,6 +24,7 @@ const roleBadgeColors: Record<UserRole, string> = {
 
 export default function StaffPage() {
   const [profiles, setProfiles] = useState<Profile[]>([])
+  const [pendingRoles, setPendingRoles] = useState<Record<string, UserRole>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<string | null>(null)
   const [success, setSuccess] = useState('')
@@ -31,12 +33,17 @@ export default function StaffPage() {
     const res = await fetch('/api/admin/staff')
     const data = await res.json()
     setProfiles(data)
+    const initial: Record<string, UserRole> = {}
+    data.forEach((p: Profile) => { initial[p.id] = p.role })
+    setPendingRoles(initial)
     setLoading(false)
   }
 
   useEffect(() => { fetchProfiles() }, [])
 
-  async function handleRoleChange(userId: string, role: UserRole) {
+  async function handleSave(userId: string) {
+    const role = pendingRoles[userId]
+    if (!role) return
     setSaving(userId)
     setSuccess('')
     const res = await fetch('/api/admin/staff', {
@@ -106,25 +113,16 @@ export default function StaffPage() {
                   </td>
                   <td className="py-3">
                     <div className="flex items-center gap-2">
-                      <select
-                        defaultValue={p.role}
-                        id={`role-${p.id}`}
-                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-glint-yellow/60"
-                      >
-                        {roles.map((r) => (
-                          <option key={r.value} value={r.value} className="bg-glint-green">
-                            {r.label}
-                          </option>
-                        ))}
-                      </select>
+                      <Select<UserRole>
+                        value={pendingRoles[p.id] ?? p.role}
+                        options={roles.map((r) => ({ value: r.value, label: r.label }))}
+                        onChange={(val) => setPendingRoles((prev) => ({ ...prev, [p.id]: val }))}
+                      />
                       <Button
                         size="sm"
                         variant="secondary"
                         loading={saving === p.id}
-                        onClick={() => {
-                          const sel = document.getElementById(`role-${p.id}`) as HTMLSelectElement
-                          handleRoleChange(p.id, sel.value as UserRole)
-                        }}
+                        onClick={() => handleSave(p.id)}
                       >
                         Salva
                       </Button>

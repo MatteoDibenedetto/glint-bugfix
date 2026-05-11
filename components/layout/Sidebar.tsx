@@ -13,12 +13,13 @@ interface NavItem {
   label: string
   icon: React.ElementType
   roles: UserRole[]
+  exact?: boolean
 }
 
 const navItems: NavItem[] = [
   { href: '/dashboard', label: 'Le mie richieste', icon: LayoutDashboard, roles: ['client'] },
   { href: '/dashboard/new', label: 'Nuova richiesta', icon: PlusCircle, roles: ['client'] },
-  { href: '/admin', label: 'Overview', icon: LayoutDashboard, roles: ['admin', 'frontend_dev', 'backend_dev', 'store_manager'] },
+  { href: '/admin', label: 'Overview', icon: LayoutDashboard, roles: ['admin', 'frontend_dev', 'backend_dev', 'store_manager'], exact: true },
   { href: '/admin/requests', label: 'Richieste', icon: ChevronRight, roles: ['admin', 'frontend_dev', 'backend_dev', 'store_manager'] },
   { href: '/admin/staff', label: 'Staff', icon: Users, roles: ['admin'] },
   { href: '/admin/stores', label: 'Store', icon: Store, roles: ['admin'] },
@@ -45,7 +46,9 @@ export default function Sidebar({ role, email, onSignOut }: SidebarProps) {
       <nav className="flex-1 space-y-0.5">
         {visibleItems.map((item) => {
           const Icon = item.icon
-          const active = pathname === item.href || pathname.startsWith(item.href + '/')
+          const active = item.exact
+            ? pathname === item.href
+            : pathname === item.href || pathname.startsWith(item.href + '/')
           return (
             <Link
               key={item.href}
