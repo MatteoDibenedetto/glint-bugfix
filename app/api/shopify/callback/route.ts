@@ -3,6 +3,8 @@ import { cookies } from 'next/headers'
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { exchangeStoreCode, getShopInfo, verifyHmac } from '@/lib/shopify/auth'
 import { createAdminClient } from '@/lib/supabase/server'
+import { encryptToken } from '@/lib/crypto/tokens'
+import { ensureAppUninstalledWebhook } from '@/lib/shopify/webhooks'
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl
@@ -30,6 +32,9 @@ export async function GET(request: NextRequest) {
   try {
     const accessToken = await exchangeStoreCode(shop, code)
     const shopInfo = await getShopInfo(shop, accessToken)
+
+    // Best-effort; never blocks login.
+    await ensureAppUninstalledWebhook(shop, accessToken)
 
     const supabaseAdmin = await createAdminClient()
 
@@ -62,7 +67,7 @@ export async function GET(request: NextRequest) {
         shop_domain: shop,
         shop_name: shopInfo.name,
         owner_id: userId,
-        shopify_access_token: accessToken,
+        shopify_access_token: encryptToken(accessToken),
       },
       { onConflict: 'shop_domain' }
     )

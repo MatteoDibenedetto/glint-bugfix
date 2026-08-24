@@ -119,11 +119,50 @@ export function validateShopDomain(shop: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)
 }
 
+/**
+ * Constant-time string compare. crypto.timingSafeEqual throws when the two
+ * buffers differ in length, so the length check must come first.
+ */
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8')
+  const bufB = Buffer.from(b, 'utf8')
+  if (bufA.length !== bufB.length) return false
+  return crypto.timingSafeEqual(bufA, bufB)
+}
+
+/**
+ * Validates the `hmac` query parameter on an OAuth callback.
+ *
+ * Shopify's algorithm: drop `hmac`, sort the remaining parameters by key, join
+ * them as `key=value` with `&`, then HMAC-SHA256 and compare as hex.
+ * URLSearchParams.toString() cannot be used to build the message — it keeps
+ * insertion order rather than sorting, and re-encodes values.
+ */
 export function verifyHmac(params: URLSearchParams, secret: string): boolean {
-  const hmacParam = params.get('hmac')
-  if (!hmacParam) return false
-  const sorted = new URLSearchParams()
-  params.forEach((v, k) => { if (k !== 'hmac') sorted.append(k, v) })
-  const digest = crypto.createHmac('sha256', secret).update(sorted.toString()).digest('hex')
-  return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmacParam))
+  const provided = params.get('hmac')
+  if (!provided) return false
+
+  const message = [...params.entries()]
+    .filter(([key]) => key !== 'hmac')
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`)
+    .join('&')
+
+  const digest = crypto.createHmac('sha256', secret).update(message).digest('hex')
+  return timingSafeEqualStrings(digest, provided)
+}
+
+/**
+ * Validates the `X-Shopify-Hmac-Sha256` header on an incoming webhook.
+ * Digest is base64 over the RAW request body — the body must not be parsed
+ * and re-serialized before this runs.
+ */
+export function verifyWebhookHmac(
+  rawBody: string,
+  providedHmac: string | null,
+  secret: string
+): boolean {
+  if (!providedHmac) return false
+  const digest = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('base64')
+  return timingSafeEqualStrings(digest, providedHmac)
 }

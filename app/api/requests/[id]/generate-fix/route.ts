@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { getMainTheme, getRelevantThemeFiles } from '@/lib/shopify/theme'
+import { getMainTheme } from '@/lib/shopify/theme'
+import { selectRelevantFiles } from '@/lib/shopify/file-selection'
 import { generateThemeFix } from '@/lib/anthropic/fix-generator'
 import { notifyDevAssigned, notifyStoreManager } from '@/lib/email/sender'
 import type { Profile, BugRequest } from '@/types'
+import { decryptToken } from '@/lib/crypto/tokens'
 
 export async function POST(
   request: NextRequest,
@@ -34,35 +36,70 @@ export async function POST(
     return NextResponse.json({ error: 'Request not found' }, { status: 404 })
   }
 
-  if (bugRequest.status !== 'pending') {
-    return NextResponse.json({ error: 'Fix already generated or in progress' }, { status: 409 })
-  }
-
   const store = bugRequest.store
   if (!store?.shopify_access_token) {
     return NextResponse.json({ error: 'Store not connected to Shopify' }, { status: 400 })
   }
 
-  // Mark as processing
-  await supabase
+  // Decrypt before claiming: a key/config failure here must not leave the
+  // request stranded in ai_processing with nothing to reset it.
+  let accessToken: string
+  try {
+    accessToken = decryptToken(store.shopify_access_token)
+  } catch (err) {
+    return NextResponse.json(
+      { error: 'Could not read the stored Shopify token', detail: err instanceof Error ? err.message : 'unknown' },
+      { status: 500 }
+    )
+  }
+
+  // Claim the request atomically: the status check and the transition have to be
+  // one operation, or two devs clicking at the same moment both generate a fix
+  // (and both bill an Opus call).
+  const { data: claimed, error: claimError } = await supabase
     .from('bug_requests')
     .update({ status: 'ai_processing' })
     .eq('id', id)
+    .eq('status', 'pending')
+    .select('id')
+
+  if (claimError) {
+    return NextResponse.json({ error: claimError.message }, { status: 500 })
+  }
+  if (!claimed?.length) {
+    return NextResponse.json(
+      { error: 'Fix already generated or in progress' },
+      { status: 409 }
+    )
+  }
 
   try {
     // Fetch theme files
-    const mainTheme = await getMainTheme(store.shop_domain, store.shopify_access_token)
-    const themeFiles = await getRelevantThemeFiles(
+    const mainTheme = await getMainTheme(store.shop_domain, accessToken)
+    const selection = await selectRelevantFiles(
       store.shop_domain,
-      store.shopify_access_token,
+      accessToken,
       mainTheme.id,
       bugRequest.description
     )
 
+    console.log(
+      `[generate-fix] ${id}: ${selection.strategy} picked ` +
+        `${selection.files.length} file(s)` +
+        (selection.reason ? ` — ${selection.reason}` : '')
+    )
+
+    if (selection.excluded.length) {
+      console.warn(
+        `[generate-fix] ${id}: excluded oversized files from context: ` +
+          selection.excluded.join(', ')
+      )
+    }
+
     // Generate fix with Claude
     const { fixes, fix_type, classification_reason } = await generateThemeFix(
       bugRequest.description,
-      themeFiles
+      selection.files
     )
 
     // Determine which devs to notify based on fix type
@@ -140,7 +177,10 @@ export async function POST(
       .update({ status: 'pending' })
       .eq('id', id)
     return NextResponse.json(
-      { error: 'Fix generation failed. Try again.' },
+      {
+        error: 'Fix generation failed.',
+        detail: err instanceof Error ? err.message : 'unknown',
+      },
       { status: 500 }
     )
   }

@@ -19,9 +19,11 @@ export default function LandingPage() {
   const [error, setError] = useState('')
   const router = useRouter()
 
-  const urlError = typeof window !== 'undefined'
-    ? new URLSearchParams(window.location.search).get('error')
+  const urlParams = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search)
     : null
+  const urlError = urlParams?.get('error') ?? null
+  const urlDetail = urlParams?.get('detail') ?? null
 
   function normalizeDomain(input: string): string {
     let s = input.trim().toLowerCase()
@@ -86,6 +88,11 @@ export default function LandingPage() {
                 <p className="text-sm text-red-400">
                   {error || errorMessages[urlError as string] || 'Errore. Riprova.'}
                 </p>
+                {urlDetail && (
+                  <p className="mt-1.5 text-xs text-red-400/70 break-all font-mono">
+                    {urlDetail}
+                  </p>
+                )}
               </div>
             )}
 

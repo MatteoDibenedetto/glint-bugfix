@@ -76,20 +76,31 @@ export interface NotificationLog {
   sent_at: string
 }
 
-// Shopify API types
+// Shopify API types (GraphQL Admin API)
+
+export type ThemeRole =
+  | 'MAIN'
+  | 'UNPUBLISHED'
+  | 'DEMO'
+  | 'DEVELOPMENT'
+  | 'ARCHIVED'
+  | 'LOCKED'
+
 export interface ShopifyTheme {
-  id: number
+  /** Global ID, e.g. "gid://shopify/OnlineStoreTheme/123456" */
+  id: string
   name: string
-  role: 'main' | 'unpublished' | 'demo'
-  created_at: string
-  updated_at: string
+  role: ThemeRole
+  processing: boolean
+  processingFailed: boolean
 }
 
-export interface ShopifyAsset {
-  key: string
-  value?: string
-  attachment?: string
-  content_type: string
-  theme_id: number
-  updated_at: string
+export interface ThemeFile {
+  /** Theme-relative path, e.g. "sections/header.liquid" */
+  filename: string
+  /** Text content. Null for binary files (images, fonts). */
+  content: string | null
+  contentType: string
+  checksumMd5: string | null
+  size: number
 }

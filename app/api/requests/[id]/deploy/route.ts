@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { applyFixToStagingTheme } from '@/lib/shopify/theme'
 import { notifyClientDeployed, notifyStoreManager } from '@/lib/email/sender'
-import type { Profile, BugRequest } from '@/types'
+import type { Profile, BugRequest, FileFix } from '@/types'
+import { decryptToken } from '@/lib/crypto/tokens'
+
+// Duplicating a theme is server-side but not instant; allow room to poll.
+export const maxDuration = 300
 
 export async function POST(
   request: NextRequest,
@@ -41,28 +45,48 @@ export async function POST(
     return NextResponse.json({ error: 'Store not connected' }, { status: 400 })
   }
 
-  const fixesToApply = (bugRequest.approved_fix || bugRequest.ai_fix_suggestion) as {
-    file: string
-    modified_content: string
-  }[]
+  const fixesToApply = (bugRequest.approved_fix ||
+    bugRequest.ai_fix_suggestion) as FileFix[]
 
   if (!fixesToApply || fixesToApply.length === 0) {
     return NextResponse.json({ error: 'No fix to deploy' }, { status: 400 })
   }
 
+  let accessToken: string
+  try {
+    accessToken = decryptToken(store.shopify_access_token)
+  } catch (err) {
+    return NextResponse.json(
+      { error: 'Could not read the stored Shopify token', detail: err instanceof Error ? err.message : 'unknown' },
+      { status: 500 }
+    )
+  }
+
+  const supabaseAdmin = await createAdminClient()
+
   try {
     const stagingTheme = await applyFixToStagingTheme(
       store.shop_domain,
-      store.shopify_access_token,
-      fixesToApply
+      accessToken,
+      fixesToApply,
+      {
+        // Resume onto the theme created by a previous attempt that timed out,
+        // instead of leaving an orphaned duplicate behind on every retry.
+        existingThemeId: bugRequest.staging_theme_id,
+        onThemeCreated: async (theme) => {
+          await supabaseAdmin
+            .from('bug_requests')
+            .update({ staging_theme_id: theme.id, staging_theme_name: theme.name })
+            .eq('id', id)
+        },
+      }
     )
 
-    const supabaseAdmin = await createAdminClient()
     await supabaseAdmin
       .from('bug_requests')
       .update({
         status: 'deployed',
-        staging_theme_id: String(stagingTheme.id),
+        staging_theme_id: stagingTheme.id,
         staging_theme_name: stagingTheme.name,
       })
       .eq('id', id)
@@ -99,6 +123,12 @@ export async function POST(
     })
   } catch (err) {
     console.error('Deploy error:', err)
-    return NextResponse.json({ error: 'Deploy failed. Check Shopify credentials.' }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: 'Deploy failed.',
+        detail: err instanceof Error ? err.message : 'unknown',
+      },
+      { status: 500 }
+    )
   }
 }

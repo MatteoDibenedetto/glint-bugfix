@@ -40,12 +40,33 @@ cp .env.example .env.local
 | `ANTHROPIC_API_KEY` | console.anthropic.com |
 | `RESEND_API_KEY` | resend.com → API Keys |
 | `NEXT_PUBLIC_APP_URL` | `http://localhost:3000` in dev, URL produzione in prod |
+| `TOKEN_ENCRYPTION_KEY` | Genera con `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
+| `ALLOW_MOCK_FIX` | Opzionale, solo in locale: `1` per generare fix simulati senza `ANTHROPIC_API_KEY` |
 
 ### 3. Supabase
 
 1. Crea un nuovo progetto su [supabase.com](https://supabase.com)
-2. Vai su **SQL Editor** e incolla il contenuto di `supabase/migrations/001_initial.sql`
-3. Esegui la migration
+2. Vai su **SQL Editor** ed esegui le migration in ordine:
+   - `supabase/migrations/001_initial.sql`
+   - `supabase/migrations/002_fix_profiles_rls_recursion.sql`
+   - `supabase/migrations/003_webhooks_and_uninstall.sql`
+
+> Sul piano free il progetto va in pausa dopo ~7 giorni di inattività e il record DNS
+> viene rimosso: le chiamate falliscono con `ENOTFOUND`. Se succede, fai **Restore**
+> dalla dashboard Supabase — URL e chiavi non cambiano.
+
+### 3b. Cifratura dei token
+
+I token di accesso Shopify sono cifrati a riposo (AES-256-GCM, prefisso `enc:v1:`).
+Imposta `TOKEN_ENCRYPTION_KEY`, poi cifra eventuali token già salvati in chiaro:
+
+```bash
+node --env-file=.env.local scripts/reencrypt-store-tokens.mjs --dry-run
+node --env-file=.env.local scripts/reencrypt-store-tokens.mjs
+```
+
+Perdere questa chiave significa perdere l'accesso agli store: va conservata nel
+password manager e impostata anche su Vercel.
 
 ### 4. Shopify App
 
@@ -56,6 +77,24 @@ cp .env.example .env.local
    - Allowed redirection URLs: `https://your-domain.vercel.app/api/shopify/callback`
 4. Scopes richiesti: `read_themes`, `write_themes`
 5. Copia API key e API secret in `.env.local`
+
+### 4b. Webhook
+
+Tutti i webhook puntano allo stesso endpoint, che smista sul topic:
+
+```
+https://your-domain.vercel.app/api/webhooks/shopify
+```
+
+- **`app/uninstalled`** viene registrato automaticamente via API al termine
+  dell'OAuth (`lib/shopify/webhooks.ts`). Alla disinstallazione il token viene
+  azzerato e lo store marcato `uninstalled_at`.
+- **I tre webhook di compliance obbligatori** (`customers/data_request`,
+  `customers/redact`, `shop/redact`) Shopify li accetta solo dalla configurazione
+  dell'app, non via API: vanno impostati con quell'URL prima della submission.
+
+Ogni consegna viene registrata in `webhook_events`, con dedup sull'header
+`X-Shopify-Webhook-Id` per rendere idempotenti i retry di Shopify.
 
 ### 5. Imposta il primo admin
 

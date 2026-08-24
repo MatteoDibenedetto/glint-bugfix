@@ -15,7 +15,7 @@ export async function GET(
     .select(`
       *,
       client:profiles!client_id(id, email, first_name, last_name),
-      store:stores(id, shop_domain, shop_name, shopify_access_token, store_manager_id),
+      store:stores(id, shop_domain, shop_name, store_manager_id),
       assigned_dev:profiles!assigned_dev_id(id, email, first_name, last_name)
     `)
     .eq('id', id)
