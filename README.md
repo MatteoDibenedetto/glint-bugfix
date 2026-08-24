@@ -50,6 +50,7 @@ cp .env.example .env.local
    - `supabase/migrations/001_initial.sql`
    - `supabase/migrations/002_fix_profiles_rls_recursion.sql`
    - `supabase/migrations/003_webhooks_and_uninstall.sql`
+   - `supabase/migrations/004_staff_google_auth.sql`
 
 > Sul piano free il progetto va in pausa dopo ~7 giorni di inattività e il record DNS
 > viene rimosso: le chiamate falliscono con `ENOTFOUND`. Se succede, fai **Restore**
@@ -95,6 +96,35 @@ https://your-domain.vercel.app/api/webhooks/shopify
 
 Ogni consegna viene registrata in `webhook_events`, con dedup sull'header
 `X-Shopify-Webhook-Id` per rendere idempotenti i retry di Shopify.
+
+### 4c. Login staff con Google
+
+Il team Glint non ha uno store Shopify, quindi accede con Google. L'allowlist dei
+domini (`@glintcompany.com`, `@tngp.it`) è imposta **nel database** da
+`handle_new_user` (migration 004): il parametro `hd` di Google è solo un
+suggerimento dell'interfaccia e si aggira, quindi non può essere lì la sicurezza.
+
+**Google Cloud Console** → [console.cloud.google.com](https://console.cloud.google.com)
+→ *APIs & Services* → *Credentials* → *Create credentials* → *OAuth client ID*:
+
+- Application type: **Web application**
+- Authorized redirect URI: `https://<project-ref>.supabase.co/auth/v1/callback`
+  (lo trovi in Supabase, non è l'URL dell'app)
+
+**Supabase** → *Authentication* → *Providers* → **Google**: abilita, incolla
+Client ID e Client Secret, salva.
+
+**Supabase** → *Authentication* → *URL Configuration* → *Redirect URLs*, aggiungi:
+
+```
+https://glint-bugfix.vercel.app/auth/staff/callback
+http://localhost:3000/auth/staff/callback
+```
+
+Chi entra con Google riceve il ruolo `frontend_dev` — accesso staff senza poteri
+di amministrazione. Un admin lo cambia da `/admin/staff`. L'appartenenza al
+dominio è il confine di fiducia: qualsiasi ruolo staff vede tutti gli store e
+tutte le richieste dei clienti.
 
 ### 5. Imposta il primo admin
 
