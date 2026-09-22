@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { notifyClientChangesRequested, notifyClientRejected } from '@/lib/email/sender'
+import type { BugRequest } from '@/types'
 
 export async function GET(
   request: NextRequest,
@@ -56,6 +58,14 @@ export async function PATCH(
     if (field in body) updates[field] = body[field]
   }
 
+  // Needed to tell a real transition from a no-op save, so the client is not
+  // emailed twice for the same decision.
+  const { data: before } = await supabase
+    .from('bug_requests')
+    .select('status')
+    .eq('id', id)
+    .single()
+
   const { data, error } = await supabase
     .from('bug_requests')
     .update(updates)
@@ -64,5 +74,48 @@ export async function PATCH(
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  if (data.status !== before?.status) {
+    await notifyClientOfStatus(data as BugRequest, id)
+  }
+
   return NextResponse.json(data)
+}
+
+/**
+ * Emails the client when a decision is taken on their request.
+ *
+ * `deployed` is not handled here — the deploy route sends that one once the
+ * staging theme actually exists, which is the point at which the news is true.
+ *
+ * A failure here must not fail the request: the status change is already
+ * committed, and rolling it back because an email bounced would be worse.
+ */
+async function notifyClientOfStatus(request: BugRequest, id: string): Promise<void> {
+  const notes = request.reviewer_notes ?? ''
+
+  try {
+    let type: string
+    if (request.status === 'changes_requested') {
+      await notifyClientChangesRequested(request.contact_email, request, notes)
+      type = 'client_changes_requested'
+    } else if (request.status === 'rejected') {
+      await notifyClientRejected(request.contact_email, request, notes)
+      type = 'client_rejected'
+    } else {
+      return
+    }
+
+    const supabaseAdmin = await createAdminClient()
+    await supabaseAdmin.from('notification_logs').insert({
+      bug_request_id: id,
+      email_to: request.contact_email,
+      notification_type: type,
+    })
+  } catch (err) {
+    console.error(
+      `[requests/${id}] could not email the client about status ${request.status}:`,
+      err instanceof Error ? err.message : err
+    )
+  }
 }

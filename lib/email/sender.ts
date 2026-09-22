@@ -138,3 +138,72 @@ export async function notifyClientChangesRequested(
     `,
   })
 }
+
+export async function notifyClientRejected(
+  clientEmail: string,
+  request: BugRequest,
+  notes: string
+): Promise<void> {
+  await resend.emails.send({
+    from: `glint. <${FROM}>`,
+    to: clientEmail,
+    subject: `[glint.] Richiesta non presa in carico — ${request.title}`,
+    html: `
+      <div style="font-family: 'DM Sans', sans-serif; background: #0C1E1A; color: #fff; padding: 40px; border-radius: 8px; max-width: 600px;">
+        <div style="margin-bottom: 24px;">
+          <span style="color: #DCFF33; font-size: 24px; font-weight: 700;">glint.</span>
+        </div>
+        <h1 style="font-size: 20px; font-weight: 700; margin-bottom: 8px;">Richiesta non presa in carico</h1>
+        <p style="color: #D6D3C9; margin-bottom: 24px;">
+          Abbiamo esaminato la tua richiesta <strong>${request.title}</strong> e non possiamo procedere.
+        </p>
+        ${
+          notes
+            ? `<div style="background: rgba(255,255,255,0.05); border-radius: 8px; padding: 20px; margin-bottom: 24px;">
+                 <p style="color: #D6D3C9; font-size: 14px; margin: 0;">${notes}</p>
+               </div>`
+            : ''
+        }
+        <p style="color: #D6D3C9; margin-bottom: 24px; font-size: 14px;">
+          Se pensi che si tratti di un errore, rispondi direttamente dalla richiesta: il team riceve la notifica.
+        </p>
+        <a href="${requestUrl(request.id, false)}"
+           style="display: inline-block; background: #FD3B01; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 700;">
+          Visualizza richiesta &rarr;
+        </a>
+      </div>
+    `,
+  })
+}
+
+/** A new message on the request thread, in either direction. */
+export async function notifyNewMessage(
+  to: string,
+  request: BugRequest,
+  body: string,
+  { authorLabel, toStaff }: { authorLabel: string; toStaff: boolean }
+): Promise<void> {
+  await resend.emails.send({
+    from: `glint. <${FROM}>`,
+    to,
+    subject: `[glint.] Nuovo messaggio — ${request.title}`,
+    html: `
+      <div style="font-family: 'DM Sans', sans-serif; background: #0C1E1A; color: #fff; padding: 40px; border-radius: 8px; max-width: 600px;">
+        <div style="margin-bottom: 24px;">
+          <span style="color: #DCFF33; font-size: 24px; font-weight: 700;">glint.</span>
+        </div>
+        <h1 style="font-size: 20px; font-weight: 700; margin-bottom: 8px;">Nuovo messaggio da ${authorLabel}</h1>
+        <p style="color: #D6D3C9; margin-bottom: 24px;">
+          Sulla richiesta <strong>${request.title}</strong>.
+        </p>
+        <div style="background: rgba(255,255,255,0.05); border-radius: 8px; padding: 20px; margin-bottom: 24px;">
+          <p style="color: #D6D3C9; font-size: 14px; margin: 0; white-space: pre-wrap;">${body}</p>
+        </div>
+        <a href="${requestUrl(request.id, toStaff)}"
+           style="display: inline-block; background: #FD3B01; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 700;">
+          Rispondi &rarr;
+        </a>
+      </div>
+    `,
+  })
+}

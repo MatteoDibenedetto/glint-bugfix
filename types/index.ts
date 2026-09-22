@@ -67,6 +67,16 @@ export interface BugRequest {
   assigned_dev?: Profile
 }
 
+export interface RequestMessage {
+  id: string
+  bug_request_id: string
+  author_id: string | null
+  body: string
+  created_at: string
+  // joins
+  author?: Pick<Profile, 'id' | 'email' | 'first_name' | 'last_name' | 'role'> | null
+}
+
 export interface NotificationLog {
   id: string
   bug_request_id: string

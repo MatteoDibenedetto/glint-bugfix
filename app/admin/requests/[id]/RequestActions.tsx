@@ -3,10 +3,19 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import DiffViewer from '@/components/requests/DiffViewer'
+import MessageThread from '@/components/requests/MessageThread'
 import Button from '@/components/ui/Button'
 import { Textarea } from '@/components/ui/Input'
 import { Card } from '@/components/ui/Card'
 import type { BugRequest, FileFix } from '@/types'
+
+/**
+ * States where the fix is still being worked on and every action stays
+ * available. `changes_requested` belongs here: asking the client a question
+ * must not take the fix away from the reviewer — that used to hide the diff and
+ * all the buttons, leaving no way to finish the request.
+ */
+const REVIEWABLE_STATUSES = ['ai_completed', 'in_review', 'changes_requested']
 
 interface StaffMember {
   id: string
@@ -209,7 +218,7 @@ export default function RequestActions({ request, fixes, approvedFix, staff, cur
       )}
 
       {/* Step 2: Review fix */}
-      {['ai_completed', 'in_review'].includes(request.status) && fixes.length > 0 && (
+      {REVIEWABLE_STATUSES.includes(request.status) && fixes.length > 0 && (
         <Card>
           <p className="text-xs font-medium text-glint-grey uppercase tracking-wider mb-4">Fix proposto da Claude</p>
           <DiffViewer
@@ -228,8 +237,22 @@ export default function RequestActions({ request, fixes, approvedFix, staff, cur
         </Card>
       )}
 
+      {/* Waiting on the client, but the fix stays actionable. */}
+      {request.status === 'changes_requested' && (
+        <Card>
+          <p className="text-xs font-medium text-glint-yellow uppercase tracking-wider mb-1">
+            In attesa del cliente
+          </p>
+          <p className="text-sm text-glint-grey">
+            Hai chiesto un chiarimento. Il cliente è stato avvisato via email e può
+            rispondere dalla sua richiesta. Puoi comunque approvare, rifiutare o
+            modificare il fix nel frattempo.
+          </p>
+        </Card>
+      )}
+
       {/* Reviewer notes + actions */}
-      {['ai_completed', 'in_review'].includes(request.status) && !isReadOnly && (
+      {REVIEWABLE_STATUSES.includes(request.status) && !isReadOnly && (
         <Card>
           <p className="text-xs font-medium text-glint-grey uppercase tracking-wider mb-3">Azioni</p>
 
@@ -288,6 +311,12 @@ export default function RequestActions({ request, fixes, approvedFix, staff, cur
           </Button>
         </Card>
       )}
+
+      <MessageThread
+        requestId={request.id}
+        prompt="Scrivi al cliente. Riceverà una notifica via email."
+        submitLabel="Invia al cliente"
+      />
 
       {request.status === 'deployed' && (
         <Card highlight>

@@ -4,6 +4,7 @@ import { StatusBadge, FixTypeBadge } from '@/components/ui/Badge'
 import { Card } from '@/components/ui/Card'
 import Link from 'next/link'
 import { ArrowLeft, CheckCircle2, Clock, Wrench, ExternalLink } from 'lucide-react'
+import MessageThread from '@/components/requests/MessageThread'
 import type { BugRequest } from '@/types'
 
 const statusSteps = [
@@ -36,7 +37,10 @@ export default async function RequestDetailPage({
   const req = data as BugRequest
   const store = req.store as { shop_domain: string; shop_name: string }
   const statusOrder = statusSteps.map((s) => s.key)
-  const currentStep = statusOrder.indexOf(req.status)
+  const currentStep =
+    req.status === 'changes_requested'
+      ? statusOrder.indexOf('in_review')
+      : statusOrder.indexOf(req.status)
 
   return (
     <div className="max-w-2xl">
@@ -119,7 +123,7 @@ export default async function RequestDetailPage({
           <p className="text-glint-orange font-medium text-sm mb-2">Chiarimento richiesto</p>
           <p className="text-glint-grey text-sm">{req.reviewer_notes}</p>
           <p className="text-white/50 text-xs mt-3">
-            Rispondi via email a <strong>{req.contact_email}</strong> con le informazioni richieste.
+            Rispondi qui sotto: il team riceve la tua risposta e riprende il lavoro.
           </p>
         </div>
       )}
@@ -143,7 +147,7 @@ export default async function RequestDetailPage({
 
       {/* Assigned dev */}
       {req.assigned_dev && (
-        <Card>
+        <Card className="mb-4">
           <p className="text-xs font-medium text-glint-grey uppercase tracking-wider mb-2">Developer assegnato</p>
           <p className="text-sm text-white">
             {(req.assigned_dev as { first_name?: string; last_name?: string })?.first_name}{' '}
@@ -151,6 +155,16 @@ export default async function RequestDetailPage({
           </p>
         </Card>
       )}
+
+      <MessageThread
+        requestId={req.id}
+        prompt={
+          req.status === 'changes_requested'
+            ? 'Il team sta aspettando una tua risposta per procedere.'
+            : undefined
+        }
+        submitLabel="Invia al team"
+      />
     </div>
   )
 }
