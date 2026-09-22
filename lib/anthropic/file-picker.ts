@@ -44,8 +44,15 @@ export async function pickFilesForFix(
   manifest: { filename: string; size: number }[],
   maxFiles: number
 ): Promise<FilePick> {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) {
     throw new Error('ANTHROPIC_API_KEY is not set')
+  }
+  if (!apiKey.startsWith('sk-ant-')) {
+    throw new Error(
+      'ANTHROPIC_API_KEY does not look like an Anthropic key (expected "sk-ant-…"). ' +
+        'It is probably still the placeholder from .env.example.'
+    )
   }
 
   const entries = manifest.slice(0, MAX_MANIFEST_ENTRIES)

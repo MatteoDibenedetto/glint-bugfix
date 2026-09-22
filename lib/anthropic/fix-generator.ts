@@ -9,6 +9,18 @@ const MODEL = 'claude-opus-5'
  */
 const MAX_TOKENS = 64_000
 
+/**
+ * Timing note: a real run on a Horizon theme took 275s — 8 files of context in,
+ * a complete 17KB file echoed back out, at effort "high". Vercel caps a function
+ * at 300s, so that is roughly a 10% margin and a harder request will exceed it.
+ *
+ * Levers, cheapest first: drop effort to "medium" (materially faster on Opus 5,
+ * and strong on this class of task); cut MAX_FILES in file-selection; or stop
+ * echoing whole files and have the model return anchored edits. The real fix is
+ * to run generation as a background job and have the UI poll, which removes the
+ * ceiling entirely.
+ */
+
 interface GenerateFixResult {
   fixes: FileFix[]
   fix_type: FixType
@@ -82,6 +94,22 @@ function mockFix(description: string, themeFiles: ThemeFile[]): GenerateFixResul
   }
 }
 
+/**
+ * A placeholder copied from .env.example is a non-empty string, so a plain
+ * presence check treats it as configured and the failure only shows up as a 401
+ * from the API. Checking the prefix turns that into an actionable message.
+ */
+function assertUsableApiKey(key: string): void {
+  if (!key.startsWith('sk-ant-')) {
+    throw new Error(
+      'ANTHROPIC_API_KEY does not look like an Anthropic key (expected it to start ' +
+        'with "sk-ant-"). It is probably still the placeholder from .env.example — ' +
+        'get a real key at console.anthropic.com and set it in .env.local and in the ' +
+        'Vercel environment variables.'
+    )
+  }
+}
+
 export async function generateThemeFix(
   description: string,
   themeFiles: ThemeFile[]
@@ -100,6 +128,8 @@ export async function generateThemeFix(
   if (themeFiles.length === 0) {
     throw new Error('No theme files were provided to analyse')
   }
+
+  assertUsableApiKey(process.env.ANTHROPIC_API_KEY)
 
   const Anthropic = (await import('@anthropic-ai/sdk')).default
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })

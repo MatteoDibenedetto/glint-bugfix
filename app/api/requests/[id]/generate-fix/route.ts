@@ -5,6 +5,11 @@ import { selectRelevantFiles } from '@/lib/shopify/file-selection'
 import { generateThemeFix } from '@/lib/anthropic/fix-generator'
 import { notifyDevAssigned, notifyStoreManager } from '@/lib/email/sender'
 import type { Profile, BugRequest } from '@/types'
+
+// Measured 275s end to end on a medium theme: triage plus a generation that
+// echoes back a whole 17KB file. This sits close to Vercel's 300s ceiling —
+// see the note in lib/anthropic/fix-generator.ts.
+export const maxDuration = 300
 import { decryptToken } from '@/lib/crypto/tokens'
 
 export async function POST(
