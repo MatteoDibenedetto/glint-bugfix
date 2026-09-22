@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { applyFixToStagingTheme } from '@/lib/shopify/theme'
+import { applyFixToLiveTheme, deleteTheme } from '@/lib/shopify/theme'
 import { notifyClientDeployed, notifyStoreManager } from '@/lib/email/sender'
 import type { Profile, BugRequest, FileFix } from '@/types'
 import { decryptToken } from '@/lib/crypto/tokens'
 
-// Duplicating a theme is server-side but not instant; allow room to poll.
+// Verifying, backing up and writing several theme files over the network.
 export const maxDuration = 300
 
 export async function POST(
@@ -37,7 +37,7 @@ export async function POST(
   }
 
   if (bugRequest.status !== 'approved') {
-    return NextResponse.json({ error: 'Request must be approved before deploying' }, { status: 409 })
+    return NextResponse.json({ error: 'Il fix va approvato prima di applicarlo al tema live' }, { status: 409 })
   }
 
   const store = bugRequest.store
@@ -64,40 +64,57 @@ export async function POST(
 
   const supabaseAdmin = await createAdminClient()
 
+  // Writing to the published theme is the point of no return for the
+  // storefront, so the reviewer has to have looked at the preview first.
+  if (!bugRequest.staging_theme_id) {
+    return NextResponse.json(
+      {
+        error:
+          "Crea prima l'anteprima: il fix non può essere applicato al tema live " +
+          'senza che qualcuno lo abbia visto funzionare.',
+      },
+      { status: 409 }
+    )
+  }
+
   try {
-    const stagingTheme = await applyFixToStagingTheme(
+    // Verifies each file against the live theme and returns what was there
+    // before, which is the only rollback we have.
+    const { theme, backup } = await applyFixToLiveTheme(
       store.shop_domain,
       accessToken,
-      fixesToApply,
-      {
-        // Resume onto the theme created by a previous attempt that timed out,
-        // instead of leaving an orphaned duplicate behind on every retry.
-        existingThemeId: bugRequest.staging_theme_id,
-        onThemeCreated: async (theme) => {
-          await supabaseAdmin
-            .from('bug_requests')
-            .update({ staging_theme_id: theme.id, staging_theme_name: theme.name })
-            .eq('id', id)
-        },
-      }
+      fixesToApply
     )
 
     await supabaseAdmin
       .from('bug_requests')
       .update({
         status: 'deployed',
-        staging_theme_id: stagingTheme.id,
-        staging_theme_name: stagingTheme.name,
+        live_backup: backup,
+        applied_at: new Date().toISOString(),
+        restored_at: null,
       })
       .eq('id', id)
 
+    // The preview has served its purpose; leaving it behind is the theme
+    // clutter this flow exists to avoid. A failure here is not worth failing
+    // the deploy over — the fix is already live.
+    try {
+      await deleteTheme(store.shop_domain, accessToken, bugRequest.staging_theme_id)
+      await supabaseAdmin
+        .from('bug_requests')
+        .update({ staging_theme_id: null, staging_theme_name: null, preview_url: null })
+        .eq('id', id)
+    } catch (cleanupError) {
+      console.warn(
+        `[deploy] ${id}: fix applied but the preview theme could not be deleted:`,
+        cleanupError instanceof Error ? cleanupError.message : cleanupError
+      )
+    }
+
     // Notify client
     const clientEmail = bugRequest.contact_email
-    await notifyClientDeployed(
-      clientEmail,
-      bugRequest as BugRequest,
-      stagingTheme.name
-    )
+    await notifyClientDeployed(clientEmail, bugRequest as BugRequest, theme.name)
     await supabaseAdmin.from('notification_logs').insert({
       bug_request_id: id,
       email_to: clientEmail,
@@ -118,14 +135,14 @@ export async function POST(
     }
 
     return NextResponse.json({
-      staging_theme_id: stagingTheme.id,
-      staging_theme_name: stagingTheme.name,
+      applied_to: theme.name,
+      files: fixesToApply.map((f) => f.file),
     })
   } catch (err) {
-    console.error('Deploy error:', err)
+    console.error(`[deploy] ${id} failed:`, err)
     return NextResponse.json(
       {
-        error: 'Deploy failed.',
+        error: 'Applicazione al tema live fallita.',
         detail: err instanceof Error ? err.message : 'unknown',
       },
       { status: 500 }

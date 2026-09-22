@@ -313,7 +313,7 @@ export async function verifyFixesAgainstTheme(
   token: string,
   themeId: string,
   fixes: FixToApply[]
-): Promise<void> {
+): Promise<ThemeFile[]> {
   for (const fix of fixes) assertWritableFilename(fix.file)
 
   const live = await readThemeFiles(
@@ -357,45 +357,176 @@ export async function verifyFixesAgainstTheme(
       )
     }
   }
+
+  return live
 }
 
 export interface ApplyFixOptions {
-  /** Resume onto an already-duplicated staging theme instead of creating a new one. */
+  /** Resume onto an already-duplicated preview theme instead of creating a new one. */
   existingThemeId?: string | null
-  /** Called as soon as the staging theme exists, before the slow wait/verify steps. */
+  /** Called as soon as the preview theme exists, before the slow wait/verify steps. */
   onThemeCreated?: (theme: ShopifyTheme) => Promise<void> | void
 }
 
-export async function applyFixToStagingTheme(
+export async function createPreviewTheme(
   shop: string,
   token: string,
   fixes: FixToApply[],
   { existingThemeId = null, onThemeCreated }: ApplyFixOptions = {}
 ): Promise<ShopifyTheme> {
-  let stagingTheme: ShopifyTheme
+  let previewTheme: ShopifyTheme
 
   if (existingThemeId) {
-    stagingTheme = await getTheme(shop, token, existingThemeId)
-    if (stagingTheme.role === 'MAIN') {
+    previewTheme = await getTheme(shop, token, existingThemeId)
+    if (previewTheme.role === 'MAIN') {
       throw new ShopifyApiError('Refusing to write to the published theme')
     }
   } else {
     const mainTheme = await getMainTheme(shop, token)
     const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ')
-    stagingTheme = await duplicateTheme(shop, token, mainTheme.id, `[glint. fix] ${stamp}`)
+    previewTheme = await duplicateTheme(shop, token, mainTheme.id, `[glint. fix] ${stamp}`)
     // Persist before the slow steps so a timeout is resumable, not orphaned.
-    await onThemeCreated?.(stagingTheme)
+    await onThemeCreated?.(previewTheme)
   }
 
-  await waitForThemeReady(shop, token, stagingTheme.id)
-  await verifyFixesAgainstTheme(shop, token, stagingTheme.id, fixes)
+  await waitForThemeReady(shop, token, previewTheme.id)
+  await verifyFixesAgainstTheme(shop, token, previewTheme.id, fixes)
 
   await writeThemeFiles(
     shop,
     token,
-    stagingTheme.id,
+    previewTheme.id,
     fixes.map((f) => ({ filename: f.file, content: f.modified_content }))
   )
 
-  return stagingTheme
+  return previewTheme
+}
+
+// ─── Preview ─────────────────────────────────────────────────────────────────
+
+/**
+ * Shareable preview URL for an unpublished theme.
+ *
+ * Shopify renders Liquid server-side with the store's own data, so there is no
+ * way to preview a change without a theme on the store. `shopify theme dev`
+ * solves this with a local process and a development theme, which a serverless
+ * function cannot host — Shopify's own guidance for a durable link is exactly
+ * this: push to an unpublished theme and share its preview.
+ */
+export function themePreviewUrl(shop: string, themeId: string): string {
+  const numericId = themeId.split('/').pop()
+  return `https://${shop}/?preview_theme_id=${numericId}`
+}
+
+export async function deleteTheme(
+  shop: string,
+  token: string,
+  themeId: string
+): Promise<void> {
+  const theme = await getTheme(shop, token, themeId)
+  if (theme.role === 'MAIN') {
+    throw new ShopifyApiError('Refusing to delete the published theme')
+  }
+
+  const data = await shopifyGraphQL<{
+    themeDelete: {
+      deletedThemeId: string | null
+      userErrors: { field?: string[] | null; message: string }[]
+    }
+  }>(
+    shop,
+    token,
+    `mutation DeleteTheme($id: ID!) {
+       themeDelete(id: $id) {
+         deletedThemeId
+         userErrors { field message }
+       }
+     }`,
+    { id: themeId }
+  )
+
+  assertNoUserErrors(data.themeDelete.userErrors, 'themeDelete failed')
+}
+
+// ─── Writing to the published theme ──────────────────────────────────────────
+
+export interface FileBackup {
+  file: string
+  /** null means the file did not exist, so restoring it means removing it. */
+  content: string | null
+}
+
+export interface LiveApplyResult {
+  theme: ShopifyTheme
+  backup: FileBackup[]
+}
+
+/**
+ * Applies a reviewed fix to the PUBLISHED theme.
+ *
+ * This is the storefront customers are looking at right now, so the same
+ * verification the preview path uses runs here too, immediately before the
+ * write: the fix is rejected unless the file on the live theme still matches
+ * the content it was generated from.
+ *
+ * The previous contents of every file touched are returned so the caller can
+ * store them and offer a restore. Shopify's own theme history does not reliably
+ * cover API writes, so this backup is the rollback path.
+ */
+export async function applyFixToLiveTheme(
+  shop: string,
+  token: string,
+  fixes: FixToApply[]
+): Promise<LiveApplyResult> {
+  const mainTheme = await getMainTheme(shop, token)
+
+  // Also enforces the path allowlist and the protected-file list.
+  const live = await verifyFixesAgainstTheme(shop, token, mainTheme.id, fixes)
+  const byName = new Map(live.map((f) => [f.filename, f]))
+
+  const backup: FileBackup[] = fixes.map((fix) => ({
+    file: fix.file,
+    content: fix.original_content === '' ? null : (byName.get(fix.file)?.content ?? null),
+  }))
+
+  await writeThemeFiles(
+    shop,
+    token,
+    mainTheme.id,
+    fixes.map((f) => ({ filename: f.file, content: f.modified_content }))
+  )
+
+  return { theme: mainTheme, backup }
+}
+
+/**
+ * Puts the files back as they were before the live write.
+ *
+ * Files the fix created cannot be removed through this path — they are reported
+ * so the caller can tell someone to delete them by hand.
+ */
+export async function restoreLiveFiles(
+  shop: string,
+  token: string,
+  backup: FileBackup[]
+): Promise<{ restored: string[]; needsManualRemoval: string[] }> {
+  const mainTheme = await getMainTheme(shop, token)
+
+  const toRestore = backup.filter(
+    (b): b is FileBackup & { content: string } => b.content !== null
+  )
+  const needsManualRemoval = backup.filter((b) => b.content === null).map((b) => b.file)
+
+  for (const b of toRestore) assertWritableFilename(b.file)
+
+  if (toRestore.length) {
+    await writeThemeFiles(
+      shop,
+      token,
+      mainTheme.id,
+      toRestore.map((b) => ({ filename: b.file, content: b.content }))
+    )
+  }
+
+  return { restored: toRestore.map((b) => b.file), needsManualRemoval }
 }

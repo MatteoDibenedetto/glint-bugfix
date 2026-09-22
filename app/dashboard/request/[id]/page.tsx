@@ -97,22 +97,22 @@ export default async function RequestDetailPage({
         </Card>
       )}
 
-      {/* Deployed: staging theme info */}
-      {req.status === 'deployed' && req.staging_theme_name && (
+      {/* Deployed: the fix is on the published theme */}
+      {req.status === 'deployed' && (
         <div className="bg-glint-yellow/5 border border-glint-yellow/30 rounded-xl p-5 mb-6">
-          <p className="text-glint-yellow font-medium text-sm mb-1">Fix pronto per il test</p>
-          <p className="text-white font-bold">{req.staging_theme_name}</p>
+          <p className="text-glint-yellow font-medium text-sm mb-1">Fix applicato</p>
           <p className="text-glint-grey text-sm mt-2">
-            Vai su Shopify Admin → Online Store → Themes per trovare il tema di staging e testarlo.
-            Quando sei soddisfatto, pubblicalo per mandarlo live.
+            La correzione è stata applicata al tema pubblicato del tuo store ed è
+            già online. Dai un&apos;occhiata: se qualcosa non va, scrivilo qui sotto
+            e il team può rimettere i file com&apos;erano.
           </p>
           <a
-            href={`https://${store?.shop_domain}/admin/themes`}
+            href={`https://${store?.shop_domain}`}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 mt-3 text-sm text-glint-orange hover:underline"
           >
-            Vai a Shopify Admin <ExternalLink size={12} />
+            Apri lo store <ExternalLink size={12} />
           </a>
         </div>
       )}

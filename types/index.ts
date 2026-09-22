@@ -57,8 +57,14 @@ export interface BugRequest {
   ai_fix_suggestion: FileFix[] | null
   approved_fix: FileFix[] | null
   reviewer_notes: string | null
+  /** Temporary preview theme carrying the proposed fix; deleted once applied. */
   staging_theme_id: string | null
   staging_theme_name: string | null
+  preview_url: string | null
+  /** Contents of each touched file just before the live write. null = did not exist. */
+  live_backup: { file: string; content: string | null }[] | null
+  applied_at: string | null
+  restored_at: string | null
   created_at: string
   updated_at: string
   // joins

@@ -131,12 +131,63 @@ export default function RequestActions({ request, fixes, approvedFix, staff, cur
     }
   }
 
+  async function handlePreview() {
+    setLoading('preview')
+    setError('')
+    try {
+      // Save the reviewer's edits first, so the preview shows what would
+      // actually be applied rather than Claude's untouched proposal.
+      await patch({ approved_fix: editedFixes })
+      await call(`/api/requests/${request.id}/preview`, {})
+      setSuccess('Anteprima pronta. Aprila e verifica il fix sullo store.')
+      router.refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Errore')
+    } finally {
+      setLoading(null)
+    }
+  }
+
+  async function handleRestore() {
+    if (
+      !confirm(
+        'Rimettere i file del tema live come erano prima del fix? ' +
+          'Eventuali modifiche fatte al tema dopo il fix verranno sovrascritte.'
+      )
+    )
+      return
+    setLoading('restore')
+    setError('')
+    try {
+      const res = await call(`/api/requests/${request.id}/restore`, {})
+      setSuccess(
+        `Ripristinati ${res.restored.length} file.` +
+          (res.needs_manual_removal?.length
+            ? ` Da rimuovere a mano: ${res.needs_manual_removal.join(', ')}.`
+            : '')
+      )
+      router.refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Errore')
+    } finally {
+      setLoading(null)
+    }
+  }
+
   async function handleDeploy() {
+    if (
+      !confirm(
+        'Applicare il fix al tema PUBBLICATO? ' +
+          'La modifica sarà immediatamente visibile ai clienti dello store. ' +
+          'I file attuali vengono salvati e puoi ripristinarli.'
+      )
+    )
+      return
     setLoading('deploy')
     setError('')
     try {
       await call(`/api/requests/${request.id}/deploy`, {})
-      setSuccess('Fix deployato sul tema di staging.')
+      setSuccess('Fix applicato al tema live.')
       router.refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Errore')
@@ -299,15 +350,62 @@ export default function RequestActions({ request, fixes, approvedFix, staff, cur
         </Card>
       )}
 
+      {/* Preview on the real storefront */}
+      {REVIEWABLE_STATUSES.includes(request.status) && fixes.length > 0 && !isReadOnly && (
+        <Card>
+          <p className="text-xs font-medium text-glint-grey uppercase tracking-wider mb-2">
+            Anteprima
+          </p>
+          <p className="text-sm text-glint-grey mb-4">
+            Crea una copia temporanea del tema live con il fix applicato e aprila
+            per verificare che funzioni. Lo store pubblicato non viene toccato.
+          </p>
+
+          {request.preview_url && (
+            <div className="bg-glint-yellow/5 border border-glint-yellow/20 rounded-lg px-4 py-3 mb-4">
+              <a
+                href={request.preview_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-glint-yellow hover:underline break-all"
+              >
+                Apri l&apos;anteprima →
+              </a>
+              <p className="text-xs text-glint-grey/60 mt-1">
+                {request.staging_theme_name}
+              </p>
+            </div>
+          )}
+
+          <Button variant="secondary" onClick={handlePreview} loading={loading === 'preview'}>
+            {request.preview_url ? 'Rigenera anteprima' : 'Crea anteprima'}
+          </Button>
+        </Card>
+      )}
+
       {/* Step 3: Deploy */}
       {request.status === 'approved' && !isReadOnly && (
         <Card highlight>
-          <p className="text-xs font-medium text-glint-yellow uppercase tracking-wider mb-2">Deploy su staging theme</p>
-          <p className="text-sm text-glint-grey mb-4">
-            Il fix verrà applicato a una copia del tema live. Il cliente riceverà una notifica via email.
+          <p className="text-xs font-medium text-glint-yellow uppercase tracking-wider mb-2">
+            Applica al tema live
           </p>
-          <Button onClick={handleDeploy} loading={loading === 'deploy'} size="lg">
-            Deploy su staging theme
+          <p className="text-sm text-glint-grey mb-4">
+            Il fix viene scritto sul tema <strong>pubblicato</strong> ed è subito
+            visibile ai clienti dello store. I file attuali vengono salvati, quindi
+            è ripristinabile. L&apos;anteprima temporanea viene poi cancellata.
+          </p>
+          {!request.preview_url && (
+            <p className="text-sm text-glint-orange mb-4">
+              Crea prima l&apos;anteprima e verifica il fix.
+            </p>
+          )}
+          <Button
+            onClick={handleDeploy}
+            loading={loading === 'deploy'}
+            size="lg"
+            disabled={!request.preview_url}
+          >
+            Applica al tema live
           </Button>
         </Card>
       )}
@@ -320,10 +418,31 @@ export default function RequestActions({ request, fixes, approvedFix, staff, cur
 
       {request.status === 'deployed' && (
         <Card highlight>
-          <p className="text-xs font-medium text-glint-yellow uppercase tracking-wider mb-1">Deployato</p>
-          <p className="text-sm text-glint-grey">
-            Il fix è stato caricato sul tema di staging. Il cliente è stato notificato.
+          <p className="text-xs font-medium text-glint-yellow uppercase tracking-wider mb-1">
+            Applicato al tema live
           </p>
+          <p className="text-sm text-glint-grey">
+            Il fix è online sullo store
+            {request.applied_at &&
+              ` dal ${new Date(request.applied_at).toLocaleString('it-IT', {
+                day: '2-digit',
+                month: 'short',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}`}
+            . Il cliente è stato notificato.
+          </p>
+
+          {request.live_backup?.length ? (
+            <div className="mt-4">
+              <p className="text-xs text-glint-grey/60 mb-2">
+                Backup disponibile per {request.live_backup.length} file.
+              </p>
+              <Button variant="danger" size="sm" onClick={handleRestore} loading={loading === 'restore'}>
+                Ripristina versione precedente
+              </Button>
+            </div>
+          ) : null}
         </Card>
       )}
     </div>
