@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyWebhookHmac } from '@/lib/shopify/auth'
+import { getCredentialsForShop } from '@/lib/shopify/apps'
 import { createAdminClient } from '@/lib/supabase/server'
 
 /**
@@ -33,20 +34,31 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text()
 
   const hmacHeader = request.headers.get('x-shopify-hmac-sha256')
-  const secret = process.env.SHOPIFY_API_SECRET
-  if (!secret) {
-    console.error('[webhook] SHOPIFY_API_SECRET is not set')
-    return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 })
-  }
-
-  if (!verifyWebhookHmac(rawBody, hmacHeader, secret)) {
-    // Shopify requires 401 specifically for a bad HMAC.
-    return NextResponse.json({ error: 'Invalid HMAC' }, { status: 401 })
-  }
-
   const topic = request.headers.get('x-shopify-topic') as Topic | null
   const shopDomain = request.headers.get('x-shopify-shop-domain')
   const webhookId = request.headers.get('x-shopify-webhook-id')
+
+  // Each store is served by its own app, so the secret keying this signature
+  // depends on which store sent it. The shop-domain header is unverified at
+  // this point and is used only to CHOOSE which secret to try — a forged one
+  // yields the wrong secret and the HMAC check below rejects the request.
+  //
+  // This is also why shopify_apps rows outlive an uninstall: delete the row and
+  // every later webhook from that shop becomes unverifiable.
+  if (!shopDomain) {
+    return NextResponse.json({ error: 'Missing shop domain' }, { status: 400 })
+  }
+
+  const creds = await getCredentialsForShop(shopDomain)
+  if (!creds) {
+    console.error(`[webhook] no app assigned to ${shopDomain}`)
+    return NextResponse.json({ error: 'Invalid HMAC' }, { status: 401 })
+  }
+
+  if (!verifyWebhookHmac(rawBody, hmacHeader, creds.clientSecret)) {
+    // Shopify requires 401 specifically for a bad HMAC.
+    return NextResponse.json({ error: 'Invalid HMAC' }, { status: 401 })
+  }
 
   if (!topic) {
     return NextResponse.json({ error: 'Missing topic' }, { status: 400 })

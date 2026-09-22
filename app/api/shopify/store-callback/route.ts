@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { exchangeStoreCode, getShopInfo, verifyHmac } from '@/lib/shopify/auth'
+import { getCredentialsForShop, markAppInstalled } from '@/lib/shopify/apps'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { encryptToken } from '@/lib/crypto/tokens'
 import { ensureAppUninstalledWebhook } from '@/lib/shopify/webhooks'
@@ -18,7 +19,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/dashboard?error=store_auth_failed', request.url))
   }
 
-  if (!verifyHmac(searchParams, process.env.SHOPIFY_API_SECRET!)) {
+  // Resolve the app serving this shop before checking the signature: the HMAC
+  // is keyed with that app's secret. A forged shop domain selects the wrong
+  // secret (or none) and fails the check below.
+  const creds = await getCredentialsForShop(shop)
+  if (!creds) {
+    return NextResponse.redirect(new URL('/dashboard?error=store_not_assigned', request.url))
+  }
+  if (!verifyHmac(searchParams, creds.clientSecret)) {
     return NextResponse.redirect(new URL('/dashboard?error=store_auth_failed', request.url))
   }
 
@@ -27,7 +35,7 @@ export async function GET(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.redirect(new URL('/', request.url))
 
-    const accessToken = await exchangeStoreCode(shop, code)
+    const accessToken = await exchangeStoreCode(shop, code, creds)
     const shopInfo = await getShopInfo(shop, accessToken)
 
     // Best-effort; never blocks login.
@@ -40,6 +48,8 @@ export async function GET(request: NextRequest) {
       owner_id: user.id,
       shopify_access_token: encryptToken(accessToken),
     }, { onConflict: 'shop_domain' })
+
+    await markAppInstalled(creds.appId, shop)
 
     cookieStore.delete('shopify_store_state')
 

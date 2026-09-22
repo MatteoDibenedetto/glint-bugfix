@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { buildStoreAuthUrl, validateShopDomain } from '@/lib/shopify/auth'
+import { getCredentialsForShop } from '@/lib/shopify/apps'
 import { createClient } from '@/lib/supabase/server'
 import { cookies } from 'next/headers'
 import crypto from 'crypto'
@@ -14,6 +15,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/dashboard?error=invalid_shop', request.url))
   }
 
+  // Which connector app serves this store. No assignment means no dev has
+  // created an app for it yet, so there is nothing to authorise against.
+  const creds = await getCredentialsForShop(shop)
+  if (!creds) {
+    return NextResponse.redirect(new URL('/dashboard?error=store_not_assigned', request.url))
+  }
+
   const state = crypto.randomBytes(16).toString('hex')
   const cookieStore = await cookies()
   cookieStore.set('shopify_store_state', state, {
@@ -23,5 +31,5 @@ export async function GET(request: NextRequest) {
     path: '/',
   })
 
-  return NextResponse.redirect(buildStoreAuthUrl(shop, state))
+  return NextResponse.redirect(buildStoreAuthUrl(shop, state, creds))
 }

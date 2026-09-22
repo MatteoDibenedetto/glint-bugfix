@@ -1,10 +1,14 @@
 import crypto from 'crypto'
+import type { AppCredentials } from './apps'
 
-const API_KEY = process.env.SHOPIFY_API_KEY!
-const API_SECRET = process.env.SHOPIFY_API_SECRET!
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL!
 
-const STORE_SCOPES = 'read_themes,write_themes'
+/**
+ * Scopes a connector app is provisioned with. Each app also records its own
+ * scopes in the registry, because they are deployed per app and can drift;
+ * this constant is only the default used when creating a new one.
+ */
+export const STORE_SCOPES = 'read_themes,write_themes'
 
 // ─── PKCE helpers ────────────────────────────────────────────────────────────
 
@@ -17,10 +21,33 @@ export function generateCodeChallenge(verifier: string): string {
 }
 
 // ─── Account OAuth (accounts.shopify.com) ────────────────────────────────────
+//
+// Identity only — it says WHO is signing in, not which store they own, and it
+// is currently unused (nothing imports these two functions).
+//
+// It deliberately stays outside the per-store registry: this flow starts
+// before any shop domain is known, so there is no way to pick a connector app
+// from it. Switching it on requires ONE dedicated login app in Glint's own
+// organization, separate from the N per-client connector apps — hence the
+// dedicated env vars below, which fall back to the old names so that nothing
+// breaks before that app exists.
+
+function loginAppCredentials(): { clientId: string; clientSecret: string } {
+  const clientId = process.env.SHOPIFY_LOGIN_APP_KEY ?? process.env.SHOPIFY_API_KEY
+  const clientSecret =
+    process.env.SHOPIFY_LOGIN_APP_SECRET ?? process.env.SHOPIFY_API_SECRET
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      'Account OAuth needs SHOPIFY_LOGIN_APP_KEY / SHOPIFY_LOGIN_APP_SECRET ' +
+        '(a single login app, not a per-client connector app)'
+    )
+  }
+  return { clientId, clientSecret }
+}
 
 export function buildAccountAuthUrl(state: string, codeChallenge: string): string {
   const params = new URLSearchParams({
-    client_id: API_KEY,
+    client_id: loginAppCredentials().clientId,
     scope: 'openid email profile',
     redirect_uri: `${APP_URL}/api/shopify/callback`,
     state,
@@ -35,13 +62,15 @@ export async function exchangeAccountCode(
   code: string,
   codeVerifier: string
 ): Promise<{ email: string; firstName: string; lastName: string }> {
+  const loginApp = loginAppCredentials()
+
   const res = await fetch('https://accounts.shopify.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
-      client_id: API_KEY,
-      client_secret: API_SECRET,
+      client_id: loginApp.clientId,
+      client_secret: loginApp.clientSecret,
       code,
       redirect_uri: `${APP_URL}/api/shopify/callback`,
       code_verifier: codeVerifier,
@@ -69,12 +98,20 @@ export async function exchangeAccountCode(
 }
 
 // ─── Store OAuth ({shop}.myshopify.com) ──────────────────────────────────────
+//
+// Credentials are passed in rather than read from the environment: which app
+// they belong to depends on the shop, because custom distribution means one
+// app per client. Resolve them with getCredentialsForShop() from ./apps.
 
 // Used for initial login
-export function buildLoginAuthUrl(shop: string, state: string): string {
+export function buildLoginAuthUrl(
+  shop: string,
+  state: string,
+  creds: AppCredentials
+): string {
   const params = new URLSearchParams({
-    client_id: API_KEY,
-    scope: STORE_SCOPES,
+    client_id: creds.clientId,
+    scope: creds.scopes,
     redirect_uri: `${APP_URL}/api/shopify/callback`,
     state,
   })
@@ -82,10 +119,14 @@ export function buildLoginAuthUrl(shop: string, state: string): string {
 }
 
 // Used to connect an additional store from the dashboard
-export function buildStoreAuthUrl(shop: string, state: string): string {
+export function buildStoreAuthUrl(
+  shop: string,
+  state: string,
+  creds: AppCredentials
+): string {
   const params = new URLSearchParams({
-    client_id: API_KEY,
-    scope: STORE_SCOPES,
+    client_id: creds.clientId,
+    scope: creds.scopes,
     redirect_uri: `${APP_URL}/api/shopify/store-callback`,
     state,
   })
@@ -94,12 +135,17 @@ export function buildStoreAuthUrl(shop: string, state: string): string {
 
 export async function exchangeStoreCode(
   shop: string,
-  code: string
+  code: string,
+  creds: AppCredentials
 ): Promise<string> {
   const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: API_KEY, client_secret: API_SECRET, code }),
+    body: JSON.stringify({
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
+      code,
+    }),
   })
   if (!res.ok) throw new Error(`Store token exchange failed: ${res.statusText}`)
   const data = await res.json()

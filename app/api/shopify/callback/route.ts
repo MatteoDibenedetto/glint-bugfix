@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { exchangeStoreCode, getShopInfo, verifyHmac } from '@/lib/shopify/auth'
+import { getCredentialsForShop, markAppInstalled } from '@/lib/shopify/apps'
 import { createAdminClient } from '@/lib/supabase/server'
 import { encryptToken } from '@/lib/crypto/tokens'
 import { ensureAppUninstalledWebhook } from '@/lib/shopify/webhooks'
@@ -22,15 +23,25 @@ export async function GET(request: NextRequest) {
   if (!storedShop || storedShop !== shop) {
     return NextResponse.redirect(new URL('/?error=invalid_shop', request.url))
   }
-  if (!verifyHmac(searchParams, process.env.SHOPIFY_API_SECRET!)) {
-    return NextResponse.redirect(new URL('/?error=invalid_hmac', request.url))
-  }
   if (!code || !shop) {
     return NextResponse.redirect(new URL('/?error=missing_params', request.url))
   }
 
+  // The HMAC is keyed with the secret of the app that serves THIS shop, so the
+  // credentials have to be resolved before the signature can be checked. The
+  // shop domain steering that lookup is not yet trusted at this point, and does
+  // not need to be: a forged one simply selects the wrong secret (or none) and
+  // the HMAC check below fails.
+  const creds = await getCredentialsForShop(shop)
+  if (!creds) {
+    return NextResponse.redirect(new URL('/?error=store_not_assigned', request.url))
+  }
+  if (!verifyHmac(searchParams, creds.clientSecret)) {
+    return NextResponse.redirect(new URL('/?error=invalid_hmac', request.url))
+  }
+
   try {
-    const accessToken = await exchangeStoreCode(shop, code)
+    const accessToken = await exchangeStoreCode(shop, code, creds)
     const shopInfo = await getShopInfo(shop, accessToken)
 
     // Best-effort; never blocks login.
@@ -71,6 +82,10 @@ export async function GET(request: NextRequest) {
       },
       { onConflict: 'shop_domain' }
     )
+
+    // Registry bookkeeping: the app is now live on this store, and any install
+    // link it was carrying is spent. Best-effort, never blocks the merchant.
+    await markAppInstalled(creds.appId, shop)
 
     // Generate a magiclink — we use the OTP token from the response, NOT the
     // action_link, so we never have to follow an HTTP redirect server-side.

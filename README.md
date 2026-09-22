@@ -51,6 +51,7 @@ cp .env.example .env.local
    - `supabase/migrations/002_fix_profiles_rls_recursion.sql`
    - `supabase/migrations/003_webhooks_and_uninstall.sql`
    - `supabase/migrations/004_staff_google_auth.sql`
+   - `supabase/migrations/005_multi_app_registry.sql`
 
 > Sul piano free il progetto va in pausa dopo ~7 giorni di inattività e il record DNS
 > viene rimosso: le chiamate falliscono con `ENOTFOUND`. Se succede, fai **Restore**
@@ -68,6 +69,33 @@ node --env-file=.env.local scripts/reencrypt-store-tokens.mjs
 
 Perdere questa chiave significa perdere l'accesso agli store: va conservata nel
 password manager e impostata anche su Vercel.
+
+### 3c. Registry multi-app
+
+La distribuzione custom di Shopify limita un'app a un solo store (o agli store di
+una sola organizzazione Plus), quindi ogni cliente ha la sua app con le sue
+credenziali. `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` non bastano più: client_id e
+secret vivono nelle tabelle `shopify_apps` / `shopify_app_secrets`, e
+`app_store_assignments` dice quale app serve quale dominio.
+
+Quella mappatura deve esistere **prima** della prima installazione: il callback
+OAuth deve scegliere un secret con cui verificare l'HMAC quando in `stores` non
+c'è ancora nessuna riga.
+
+Dopo la migration 005, registra l'app già esistente:
+
+```bash
+node --env-file=.env.local scripts/backfill-first-app.mjs --dry-run
+node --env-file=.env.local scripts/backfill-first-app.mjs
+```
+
+Da quel momento `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` restano solo come
+fallback del login via `accounts.shopify.com`, che oggi non è usato da nessuna
+route. Se quel flusso verrà attivato servirà **una sola app di login**
+nell'organizzazione di Glint, separata dalle app connettore: parte prima di
+conoscere il dominio dello store, quindi non può risolvere nessuna app dal
+registry. Le variabili dedicate sono già previste
+(`SHOPIFY_LOGIN_APP_KEY` / `SHOPIFY_LOGIN_APP_SECRET`).
 
 ### 4. Shopify App
 
