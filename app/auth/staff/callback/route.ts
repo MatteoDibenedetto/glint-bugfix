@@ -41,11 +41,33 @@ export async function GET(request: NextRequest) {
     const isDomainRejection = /staff domains|check_violation|Database error/i.test(
       exchangeError.message
     )
-    console.error('[auth/staff] code exchange failed:', exchangeError.message)
+
+    // The PKCE verifier is a cookie on the origin the user clicked from. If it
+    // is missing, the flow started somewhere else: Supabase falls back to the
+    // Site URL when `redirect_to` is not in the Redirect URLs allowlist, so a
+    // sign-in begun on e.g. localhost lands here on the production origin.
+    const isVerifierMissing =
+      exchangeError.name === 'AuthPKCECodeVerifierMissingError' ||
+      /code verifier not found/i.test(exchangeError.message)
+
+    if (isVerifierMissing) {
+      console.error(
+        `[auth/staff] no PKCE verifier cookie at ${origin}. The sign-in most likely ` +
+          'started on another origin: add that origin to Supabase > Authentication > ' +
+          'URL Configuration > Redirect URLs.'
+      )
+    } else {
+      console.error('[auth/staff] code exchange failed:', exchangeError.message)
+    }
+
+    const errorCode = isDomainRejection
+      ? 'staff_domain'
+      : isVerifierMissing
+        ? 'oauth_origin'
+        : 'oauth_failed'
 
     return NextResponse.redirect(
-      `${origin}/?error=${isDomainRejection ? 'staff_domain' : 'oauth_failed'}` +
-        `&detail=${encodeURIComponent(exchangeError.message)}`
+      `${origin}/?error=${errorCode}&detail=${encodeURIComponent(exchangeError.message)}`
     )
   }
 

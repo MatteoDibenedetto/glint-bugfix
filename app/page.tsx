@@ -13,6 +13,9 @@ const errorMessages: Record<string, string> = {
   missing_params: 'Parametri mancanti. Riprova.',
   auth_failed: 'Autenticazione fallita. Verifica il dominio e riprova.',
   oauth_failed: 'Accesso con Google non riuscito. Riprova.',
+  oauth_origin:
+    "Il login è iniziato su un indirizzo diverso da questo. Apri l'app sull'URL " +
+    'configurato in Supabase (Redirect URLs) e riprova.',
   staff_domain:
     'Questo accesso è riservato al team Glint. Usa un indirizzo @glintcompany.com o @tngp.it.',
 }
