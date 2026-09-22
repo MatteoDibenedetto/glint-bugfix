@@ -1,4 +1,4 @@
-const MODEL = 'claude-opus-5'
+const MODEL = 'claude-sonnet-5'
 
 /** Filenames are cheap to reason about; the fix itself is the expensive call. */
 const MAX_MANIFEST_ENTRIES = 1500

@@ -1,30 +1,51 @@
 import type { FileFix, FixType, ThemeFile } from '@/types'
+import { applyEdits, type ModelEdit } from './apply-edits'
 
-const MODEL = 'claude-opus-5'
+const MODEL = 'claude-sonnet-5'
 
 /**
- * Generous output budget: a fix echoes back complete file contents, so a tight
- * limit truncates the response mid-file. Requests this large must stream or the
- * SDK hits its HTTP timeout.
+ * Output budget. The model now returns small find/replace edits rather than
+ * whole files, so the only thing that can still be large is the body of a
+ * brand-new file. This is a ceiling, not a cost — only generated tokens are
+ * billed — but keeping it tight surfaces a runaway response early.
  */
-const MAX_TOKENS = 64_000
+const MAX_TOKENS = 16_000
 
 /**
- * Timing note: a real run on a Horizon theme took 275s — 8 files of context in,
- * a complete 17KB file echoed back out, at effort "high". Vercel caps a function
- * at 300s, so that is roughly a 10% margin and a harder request will exceed it.
+ * Timing note: a run on a Horizon theme once took 275s — 8 files of context in,
+ * a complete 17KB file echoed back out, against Vercel's 300s function cap.
+ * Both halves of that have since been cut: file-selection caps the input, and
+ * edits replaced the whole-file echo on the way out.
  *
- * Levers, cheapest first: drop effort to "medium" (materially faster on Opus 5,
- * and strong on this class of task); cut MAX_FILES in file-selection; or stop
- * echoing whole files and have the model return anchored edits. The real fix is
- * to run generation as a background job and have the UI poll, which removes the
- * ceiling entirely.
+ * If generation ever approaches the ceiling again, the real fix is to run it as
+ * a background job and have the UI poll, which removes the limit entirely.
  */
 
 interface GenerateFixResult {
   fixes: FileFix[]
   fix_type: FixType
   classification_reason: string
+}
+
+/**
+ * What the model returns.
+ *
+ * It carries neither the original file nor the modified one. The original is
+ * already on the server — those bytes came from the theme moments earlier — and
+ * the modified version is derived by applying `edits` to it. A typical fix
+ * touches a handful of lines, so this costs a few hundred output tokens where
+ * echoing both copies of a 17KB file cost close to ten thousand.
+ *
+ * `find` doubles as the proof that the model is editing the file it named: text
+ * quoted from the wrong file simply will not match, which is a stronger check
+ * than comparing a file's first and last lines and costs nothing extra.
+ */
+interface ModelFix {
+  file: string
+  is_new_file: boolean
+  edits: ModelEdit[]
+  new_content: string
+  explanation: string
 }
 
 /** Constrains the response shape, replacing regex extraction of JSON. */
@@ -39,11 +60,23 @@ const FIX_SCHEMA = {
         type: 'object',
         properties: {
           file: { type: 'string' },
-          original_content: { type: 'string' },
-          modified_content: { type: 'string' },
+          is_new_file: { type: 'boolean' },
+          edits: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                find: { type: 'string' },
+                replace: { type: 'string' },
+              },
+              required: ['find', 'replace'],
+              additionalProperties: false,
+            },
+          },
+          new_content: { type: 'string' },
           explanation: { type: 'string' },
         },
-        required: ['file', 'original_content', 'modified_content', 'explanation'],
+        required: ['file', 'is_new_file', 'edits', 'new_content', 'explanation'],
         additionalProperties: false,
       },
     },
@@ -52,17 +85,19 @@ const FIX_SCHEMA = {
   additionalProperties: false,
 } as const
 
-const SYSTEM_PROMPT = `You are an expert Shopify theme developer. Given a merchant's bug report and the current contents of the relevant theme files, produce the exact file modifications that fix the issue.
+const SYSTEM_PROMPT = `You are an expert Shopify theme developer. Given a merchant's bug report and the current contents of the relevant theme files, produce the exact edits that fix the issue.
 
 Classify the request as "frontend" (Liquid templates, CSS, JS, UI, layout) or "backend" (app logic, API integrations, webhooks, Shopify Functions).
 
 Rules:
 - Only modify files that appear in the provided theme files. Never invent a filename.
-- original_content must be the byte-exact current content of the file as provided to you, complete and unmodified. It is compared against the live theme before anything is written, and any difference causes the fix to be rejected.
-- modified_content must be the complete file with the fix applied — not a diff, not an excerpt.
-- Include only files that actually need to change.
+- Express each change as an entry in "edits": "find" is a snippet copied verbatim from the file as provided to you, and "replace" is what it becomes.
+- "find" must appear EXACTLY ONCE in that file. Include enough surrounding lines to make it unique, but no more than that — a snippet that matches nothing, or matches twice, is rejected and the whole fix has to be generated again.
+- Never return the whole file. Keep each "find" to the smallest unique region around the change.
+- Use several edits for several separate changes in one file, rather than one large edit spanning them.
 - Change as little as possible to fix the reported issue. Do not reformat, refactor, or tidy surrounding code.
-- To create a new file, set original_content to an empty string.
+- For an existing file: set is_new_file to false, fill "edits", and leave new_content empty.
+- To create a new file: set is_new_file to true, put the complete file body in new_content, and leave "edits" empty.
 - classification_reason must be written in Italian (the merchants are Italian).`
 
 function buildUserMessage(description: string, themeFiles: ThemeFile[]): string {
@@ -138,11 +173,12 @@ export async function generateThemeFix(
     model: MODEL,
     max_tokens: MAX_TOKENS,
     system: SYSTEM_PROMPT,
+    thinking: { type: 'adaptive' },
     output_config: {
-      // 'medium' keeps generation inside the function timeout; a measured run at
-      // 'high' took 275s against a 300s ceiling. Raise it if fix quality on hard
-      // bugs turns out to be the bottleneck — but move generation to a
-      // background job first, or it will time out.
+      // Thinking tokens are billed as output, so this is the main quality/cost
+      // dial left on this call. 'medium' is the compromise; 'low' is materially
+      // cheaper and fine for one-line CSS and markup fixes, 'high' earns its
+      // cost on bugs that span files.
       effort: 'medium',
       format: { type: 'json_schema', schema: FIX_SCHEMA },
     },
@@ -156,8 +192,8 @@ export async function generateThemeFix(
   }
   if (message.stop_reason === 'max_tokens') {
     throw new Error(
-      `Response hit the ${MAX_TOKENS}-token output limit and is incomplete. The theme ` +
-        `files involved are too large to rewrite whole — narrow the request to fewer files.`
+      `Response hit the ${MAX_TOKENS}-token output limit and is incomplete. ` +
+        `Generate again, or narrow the request to fewer files.`
     )
   }
 
@@ -169,17 +205,18 @@ export async function generateThemeFix(
   const result = JSON.parse(textBlock.text) as {
     fix_type: FixType
     classification_reason: string
-    fixes: FileFix[]
+    fixes: ModelFix[]
   }
 
   if (!result.fixes?.length) {
     throw new Error('Claude returned no file changes for this request')
   }
 
-  // The model may only touch files we actually sent it.
   const provided = new Map(themeFiles.map((f) => [f.filename, f.content ?? '']))
+
+  // The model may only touch files we actually sent it.
   const unknown = result.fixes
-    .filter((f) => f.original_content !== '' && !provided.has(f.file))
+    .filter((f) => !f.is_new_file && !provided.has(f.file))
     .map((f) => f.file)
   if (unknown.length) {
     throw new Error(
@@ -187,32 +224,41 @@ export async function generateThemeFix(
     )
   }
 
-  // Observed intermittently: with several files in context the model can pair
-  // one file's content with another file's name. Deploying that would overwrite
-  // the named file with the wrong content, so the mismatch has to be caught
-  // before a reviewer ever sees the fix — not at deploy time, by which point it
-  // has already been approved.
-  const mismatched = result.fixes
-    .filter((f) => f.original_content !== '')
-    .filter((f) => f.original_content !== provided.get(f.file))
-    .map((f) => {
-      const actual = themeFiles.find((t) => t.content === f.original_content)
-      return (
-        `${f.file} (claimed ${f.original_content.length} chars, file has ` +
-        `${provided.get(f.file)?.length ?? 0}` +
-        (actual ? `; the content actually belongs to ${actual.filename}` : '') +
-        ')'
-      )
-    })
-  if (mismatched.length) {
+  // is_new_file skips the deploy step's comparison against the live theme, so a
+  // file wrongly flagged as new would be overwritten unchecked. The flag
+  // contradicting a file we demonstrably read is reason enough to stop.
+  const falselyNew = result.fixes
+    .filter((f) => f.is_new_file && provided.has(f.file))
+    .map((f) => f.file)
+  if (falselyNew.length) {
     throw new Error(
-      `Claude returned content that does not match the file it named: ` +
-        `${mismatched.join('; ')}. This happens occasionally — generate again.`
+      `Claude marked existing files as new: ${falselyNew.join(', ')}. Generate again.`
     )
   }
 
+  const fixes: FileFix[] = result.fixes.map((f) => {
+    if (f.is_new_file) {
+      return {
+        file: f.file,
+        original_content: '',
+        modified_content: f.new_content,
+        explanation: f.explanation,
+      }
+    }
+
+    // original_content is byte-exact by construction: it is the copy the fix was
+    // generated against, and what the deploy step compares to the live theme.
+    const original = provided.get(f.file)!
+    return {
+      file: f.file,
+      original_content: original,
+      modified_content: applyEdits(f.file, original, f.edits),
+      explanation: f.explanation,
+    }
+  })
+
   return {
-    fixes: result.fixes,
+    fixes,
     fix_type: result.fix_type,
     classification_reason: result.classification_reason,
   }

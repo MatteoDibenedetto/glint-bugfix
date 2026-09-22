@@ -6,11 +6,29 @@ import type { ThemeFile } from '@/types'
 const TEXT_EXTENSIONS = /\.(liquid|css|js|json)$/
 
 /**
- * Total characters of theme source we will send in one request.
- * Files that do not fit are dropped whole and reported — never truncated,
- * because the model is asked to echo back exact file content.
+ * Compiled and minified bundles. They are text and they match the extensions
+ * above, but they are machine output: enormous, unreadable, and never the right
+ * place to apply a hand-written fix.
  */
-const CONTENT_BUDGET_CHARS = 600_000
+const MINIFIED = /\.min\.(js|css)$/
+
+/**
+ * Largest single file we will send. A theme's compiled CSS or JS can run to
+ * several hundred KB on its own — at roughly 4 characters per token one such
+ * file is more input than the entire rest of the request.
+ */
+const MAX_FILE_BYTES = 50_000
+
+/**
+ * Total characters of theme source we will send in one request. Files that do
+ * not fit are dropped whole and reported — never truncated, because the model
+ * is shown these files as the exact current state of the theme.
+ *
+ * This was 600,000, which is ~150k tokens: a single request could fill the
+ * context with theme source and cost more in input than the fix was worth.
+ * Five files under the per-file cap fit comfortably in 80,000.
+ */
+const CONTENT_BUDGET_CHARS = 80_000
 
 // Fewer files means less input to read and less for the model to weigh, which
 // is the second lever on generation time. The triage pass ranks by likelihood,
@@ -77,12 +95,30 @@ export async function selectRelevantFiles(
 ): Promise<FileSelection> {
   const manifest = await listThemeFilenames(shop, token, themeId)
 
-  const candidates = manifest.filter(
-    (f) => TEXT_EXTENSIONS.test(f.filename) && !f.filename.startsWith('assets/vendor')
+  const eligible = manifest.filter(
+    (f) =>
+      TEXT_EXTENSIONS.test(f.filename) &&
+      !f.filename.startsWith('assets/vendor') &&
+      !MINIFIED.test(f.filename)
   )
 
+  // The manifest already carries every file's size, so oversized files can be
+  // dropped before the picker ever sees them — cheaper than letting one get
+  // chosen and then discarding it after it has been fetched.
+  const candidates = eligible.filter((f) => f.size <= MAX_FILE_BYTES)
+  const oversized = eligible
+    .filter((f) => f.size > MAX_FILE_BYTES)
+    .map((f) => `${f.filename} (${Math.round(f.size / 1024)}KB)`)
+
+  if (oversized.length) {
+    console.warn(
+      `[file-selection] skipping ${oversized.length} file(s) over ` +
+        `${MAX_FILE_BYTES / 1000}KB: ${oversized.join(', ')}`
+    )
+  }
+
   if (candidates.length === 0) {
-    return { files: [], excluded: [], strategy: 'keyword-fallback' }
+    return { files: [], excluded: oversized, strategy: 'keyword-fallback' }
   }
 
   let picked: string[]
@@ -115,7 +151,7 @@ export async function selectRelevantFiles(
   // Apply the budget by dropping whole files, so one huge file cannot crowd out
   // everything else — and is never cut in half.
   const files: ThemeFile[] = []
-  const excluded: string[] = []
+  const excluded: string[] = [...oversized]
   let used = 0
 
   for (const f of ordered) {
