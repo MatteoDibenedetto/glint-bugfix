@@ -12,7 +12,10 @@ const TEXT_EXTENSIONS = /\.(liquid|css|js|json)$/
  */
 const CONTENT_BUDGET_CHARS = 600_000
 
-const MAX_FILES = 8
+// Fewer files means less input to read and less for the model to weigh, which
+// is the second lever on generation time. The triage pass ranks by likelihood,
+// so the file that matters is normally in the first two or three.
+const MAX_FILES = 5
 
 export interface FileSelection {
   files: ThemeFile[]

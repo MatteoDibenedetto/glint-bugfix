@@ -139,8 +139,11 @@ export async function generateThemeFix(
     max_tokens: MAX_TOKENS,
     system: SYSTEM_PROMPT,
     output_config: {
-      // Raise to 'xhigh' if fix quality on hard bugs is the bottleneck.
-      effort: 'high',
+      // 'medium' keeps generation inside the function timeout; a measured run at
+      // 'high' took 275s against a 300s ceiling. Raise it if fix quality on hard
+      // bugs turns out to be the bottleneck — but move generation to a
+      // background job first, or it will time out.
+      effort: 'medium',
       format: { type: 'json_schema', schema: FIX_SCHEMA },
     },
     messages: [{ role: 'user', content: buildUserMessage(description, themeFiles) }],
@@ -174,13 +177,37 @@ export async function generateThemeFix(
   }
 
   // The model may only touch files we actually sent it.
-  const provided = new Set(themeFiles.map((f) => f.filename))
+  const provided = new Map(themeFiles.map((f) => [f.filename, f.content ?? '']))
   const unknown = result.fixes
     .filter((f) => f.original_content !== '' && !provided.has(f.file))
     .map((f) => f.file)
   if (unknown.length) {
     throw new Error(
       `Claude proposed changes to files that were not provided: ${unknown.join(', ')}`
+    )
+  }
+
+  // Observed intermittently: with several files in context the model can pair
+  // one file's content with another file's name. Deploying that would overwrite
+  // the named file with the wrong content, so the mismatch has to be caught
+  // before a reviewer ever sees the fix — not at deploy time, by which point it
+  // has already been approved.
+  const mismatched = result.fixes
+    .filter((f) => f.original_content !== '')
+    .filter((f) => f.original_content !== provided.get(f.file))
+    .map((f) => {
+      const actual = themeFiles.find((t) => t.content === f.original_content)
+      return (
+        `${f.file} (claimed ${f.original_content.length} chars, file has ` +
+        `${provided.get(f.file)?.length ?? 0}` +
+        (actual ? `; the content actually belongs to ${actual.filename}` : '') +
+        ')'
+      )
+    })
+  if (mismatched.length) {
+    throw new Error(
+      `Claude returned content that does not match the file it named: ` +
+        `${mismatched.join('; ')}. This happens occasionally — generate again.`
     )
   }
 
